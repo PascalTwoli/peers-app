@@ -7,6 +7,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 import cors from "cors";
+import { connectDB, isDBConnected } from "./db/connect.js";
+import Message from "./db/models/Message.js";
+import Room from "./db/models/Room.js";
+import Invite from "./db/models/Invite.js";
+import User from "./db/models/User.js";
 import {
 	createCorsOriginChecker,
 	parseAllowedOrigins,
@@ -24,6 +29,7 @@ const MAX_CONNECTIONS_PER_IP = Number(process.env.MAX_CONNECTIONS_PER_IP || 20);
 const OFFLINE_MESSAGE_TTL_MS = Number(
 	process.env.OFFLINE_MESSAGE_TTL_MS || 7 * 24 * 60 * 60 * 1000,
 );
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const app = express();
 
@@ -52,11 +58,63 @@ app.get("/api/invite/:code", (req, res) => {
 	const code = req.params.code;
 	const invite = inviteLinks.get(code);
 	if (!invite) {
-		res.status(404).json({ error: "Invite not found" });
+		if (!isDBConnected()) {
+			res.status(404).json({ error: "Invite not found" });
+			return;
+		}
+
+		Invite.findOne({ code, expiresAt: { $gt: new Date() } })
+			.then((dbInvite) => {
+				if (!dbInvite) {
+					res.status(404).json({ error: "Invite not found" });
+					return;
+				}
+
+				res.json({ code, username: dbInvite.createdBy });
+			})
+			.catch((error) => {
+				console.error("Failed to load invite from MongoDB:", error);
+				res.status(404).json({ error: "Invite not found" });
+			});
 		return;
 	}
 
 	res.json({ code, username: invite.owner });
+});
+
+app.get("/api/messages", async (req, res) => {
+	const { userA, userB } = req.query;
+	const parsedLimit = Number.parseInt(req.query.limit, 10);
+	const limit = Number.isFinite(parsedLimit)
+		? Math.min(Math.max(parsedLimit, 1), 200)
+		: 50;
+
+	if (!userA || !userB) {
+		res.status(400).json({ error: "userA and userB are required" });
+		return;
+	}
+
+	if (!isDBConnected()) {
+		res.status(503).json({ error: "MongoDB is unavailable" });
+		return;
+	}
+
+	try {
+		const messages = await Message.find({
+			$or: [
+				{ from: userA, to: userB },
+				{ from: userB, to: userA },
+			],
+		})
+			.sort({ timestamp: -1 })
+			.limit(limit)
+			.lean();
+
+		res.json({ messages });
+	} catch (error) {
+		console.error("Failed to fetch message history:", error);
+		res.status(500).json({ error: "Failed to fetch messages" });
+	}
 });
 
 // Enable trust proxy so Express recognizes ngrok headers ++++++++
@@ -126,6 +184,182 @@ const RATE_LIMITS = {
 	create_invite: { max: 50, windowMs: 60_000 },
 	invite_join: { max: 50, windowMs: 60_000 },
 };
+
+function persistDirectMessage(payload) {
+	if (!isDBConnected()) {
+		return;
+	}
+
+	const document = {
+		messageId: payload.messageId || randomUUID(),
+		from: payload.from,
+		to: payload.to,
+		text: payload.text || "",
+		fileName: payload.fileName || null,
+		fileUrl: payload.fileUrl || null,
+		timestamp: payload.timestamp || Date.now(),
+		edited: false,
+		reactions: [],
+	};
+
+	Message.updateOne(
+		{ messageId: document.messageId },
+		{ $setOnInsert: document },
+		{ upsert: true },
+	).catch((error) => {
+		console.error("Failed to persist direct message:", error);
+	});
+}
+
+function persistRoomMessage(payload) {
+	if (!isDBConnected()) {
+		return;
+	}
+
+	const document = {
+		messageId: payload.messageId || randomUUID(),
+		from: payload.from,
+		to: null,
+		roomId: payload.roomId,
+		text: payload.message || "",
+		fileName: null,
+		fileUrl: null,
+		timestamp: payload.timestamp || Date.now(),
+		edited: false,
+		reactions: [],
+	};
+
+	Message.updateOne(
+		{ messageId: document.messageId },
+		{ $setOnInsert: document },
+		{ upsert: true },
+	).catch((error) => {
+		console.error("Failed to persist room message:", error);
+	});
+}
+
+function persistRoomState(roomId, room, createdAt) {
+	if (!isDBConnected() || !roomId || !room) {
+		return;
+	}
+
+	Room.updateOne(
+		{ roomId },
+		{
+			$set: {
+				name: room.name,
+				owner: room.owner,
+				members: Array.from(room.members || []),
+				pendingRequests: Array.from(room.pendingRequests || []),
+			},
+			$setOnInsert: {
+				createdAt: createdAt || new Date(),
+			},
+		},
+		{ upsert: true },
+	).catch((error) => {
+		console.error("Failed to persist room state:", error);
+	});
+}
+
+function persistInviteLink(code, createdBy, targetRoom = null, expiresAt) {
+	if (!isDBConnected()) {
+		return;
+	}
+
+	Invite.updateOne(
+		{ code },
+		{
+			$set: {
+				createdBy,
+				targetRoom,
+				expiresAt,
+			},
+		},
+		{ upsert: true },
+	).catch((error) => {
+		console.error("Failed to persist invite:", error);
+	});
+}
+
+async function findInviteByCode(code) {
+	if (!isDBConnected()) {
+		return null;
+	}
+
+	try {
+		return await Invite.findOne({ code, expiresAt: { $gt: new Date() } }).lean();
+	} catch (error) {
+		console.error("Failed to lookup invite:", error);
+		return null;
+	}
+}
+
+function upsertUserPresence(username) {
+	if (!isDBConnected() || !username) {
+		return;
+	}
+
+	User.updateOne(
+		{ username },
+		{
+			$set: { lastSeen: new Date() },
+			$setOnInsert: { createdAt: new Date() },
+		},
+		{ upsert: true },
+	).catch((error) => {
+		console.error("Failed to persist user presence:", error);
+	});
+}
+
+async function hydrateDurableState() {
+	if (!isDBConnected()) {
+		return;
+	}
+
+	try {
+		const [users, dbRooms, dbInvites] = await Promise.all([
+			User.find({}, { username: 1, _id: 0 }).lean(),
+			Room.find({}).lean(),
+			Invite.find({ expiresAt: { $gt: new Date() } }).lean(),
+		]);
+
+		for (const user of users) {
+			if (user.username) {
+				registeredUsers.add(user.username);
+			}
+		}
+
+		for (const room of dbRooms) {
+			rooms.set(room.roomId, {
+				name: room.name,
+				owner: room.owner,
+				members: new Set(room.members || []),
+				pendingRequests: new Set(room.pendingRequests || []),
+				pendingInvites: new Set(),
+			});
+		}
+
+		for (const invite of dbInvites) {
+			inviteLinks.set(invite.code, {
+				owner: invite.createdBy,
+				createdAt: invite.expiresAt
+					? new Date(invite.expiresAt).getTime() - INVITE_TTL_MS
+					: Date.now(),
+				expiresAt: invite.expiresAt
+					? new Date(invite.expiresAt).getTime()
+					: Date.now() + INVITE_TTL_MS,
+				targetRoom: invite.targetRoom || null,
+			});
+		}
+
+		console.log(
+			`Hydrated durable state: ${users.length} users, ${dbRooms.length} rooms, ${dbInvites.length} invites`,
+		);
+	} catch (error) {
+		console.error("Failed to hydrate durable state:", error);
+	}
+}
 
 function randomCode(length = 6) {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -366,7 +600,7 @@ wss.on("connection", (ws, req) => {
 		}),
 	);
 
-	ws.on("message", (msg) => {
+	ws.on("message", async (msg) => {
 		try {
 			const data = JSON.parse(msg);
 			console.log("Received Message:", data);
@@ -431,7 +665,15 @@ wss.on("connection", (ws, req) => {
 					if (!from) break;
 
 					const code = generateInviteCode();
-					inviteLinks.set(code, { owner: from, createdAt: Date.now() });
+					const now = Date.now();
+					const expiresAt = now + INVITE_TTL_MS;
+					inviteLinks.set(code, {
+						owner: from,
+						createdAt: now,
+						expiresAt,
+						targetRoom: null,
+					});
+					persistInviteLink(code, from, null, new Date(expiresAt));
 					ws.send(
 						JSON.stringify({
 							type: "invite_created",
@@ -444,7 +686,20 @@ wss.on("connection", (ws, req) => {
 
 				case "invite_join": {
 					const from = activeConnections.get(ws);
-					const invite = inviteLinks.get(data.code);
+					let invite = inviteLinks.get(data.code);
+					if (!invite) {
+						const dbInvite = await findInviteByCode(data.code);
+						if (dbInvite) {
+							invite = {
+								owner: dbInvite.createdBy,
+								createdAt:
+									new Date(dbInvite.expiresAt).getTime() - INVITE_TTL_MS,
+								expiresAt: new Date(dbInvite.expiresAt).getTime(),
+								targetRoom: dbInvite.targetRoom || null,
+							};
+							inviteLinks.set(data.code, invite);
+						}
+					}
 					if (!from || !invite) {
 						ws.send(
 							JSON.stringify({
@@ -495,6 +750,7 @@ wss.on("connection", (ws, req) => {
 						pendingRequests: new Set(),
 						pendingInvites: new Set(),
 					});
+					persistRoomState(roomId, rooms.get(roomId), new Date());
 
 					const room = rooms.get(roomId);
 					for (const invitedUser of invitedUsers) {
@@ -557,6 +813,7 @@ wss.on("connection", (ws, req) => {
 						room.pendingRequests.delete(data.username);
 						room.members.add(data.username);
 					}
+					persistRoomState(data.roomId, room);
 					broadcastRoomLists();
 					break;
 				}
@@ -581,6 +838,8 @@ wss.on("connection", (ws, req) => {
 						sendRoomInvite(data.roomId, room, normalized);
 					}
 
+					persistRoomState(data.roomId, room);
+
 					broadcastRoomLists();
 					break;
 				}
@@ -594,6 +853,7 @@ wss.on("connection", (ws, req) => {
 					if (data.accept) {
 						room.members.add(from);
 					}
+					persistRoomState(data.roomId, room);
 
 					const ownerSocket = getSocketByUsername(room.owner);
 					if (ownerSocket && ownerSocket.readyState === ownerSocket.OPEN) {
@@ -631,6 +891,7 @@ wss.on("connection", (ws, req) => {
 								? data.timestamp
 								: Date.now(),
 					};
+					persistRoomMessage(payload);
 
 					for (const member of room.members) {
 						const memberSocket = getSocketByUsername(member);
@@ -694,6 +955,16 @@ function forwardToUser(data, ws, shouldQueue = false) {
 	console.log("Forwarding", data.type, "to", data.to, "from", from);
 
 	const payload = buildPayload(data, ws);
+
+	if (payload.type === "chat") {
+		persistDirectMessage(payload);
+	} else if (payload.type === "file-message") {
+		persistDirectMessage({
+			...payload,
+			text: payload.caption || "",
+			fileUrl: null,
+		});
+	}
 
 	if (targetUserWs && targetUserWs.readyState === targetUserWs.OPEN) {
 		targetUserWs.send(JSON.stringify(payload));
@@ -808,6 +1079,7 @@ function handleUserJoined(ws, username) {
 
 	// Register the user (persistent)
 	registeredUsers.add(username);
+	upsertUserPresence(username);
 
 	// Check if this username already exists with a different socket (reconnection)
 	for (const [existingWs, existingUsername] of activeConnections.entries()) {
@@ -880,4 +1152,16 @@ server.listen(PORT, HOST, () => {
 			}
 		}
 	});
+
+	connectDB()
+		.then((connected) => {
+			if (!connected) {
+				return;
+			}
+
+			hydrateDurableState();
+		})
+		.catch((error) => {
+			console.warn("MongoDB startup connection failed:", error.message);
+		});
 });
