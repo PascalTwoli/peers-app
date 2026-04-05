@@ -1,20 +1,20 @@
 import { useState, useEffect } from 'react'
 import { X, Trash2, Download, Image, File, Film, Paperclip } from 'lucide-react'
-import { getAllFiles, deleteFile } from '../services/storageService'
+import { getSavedFilesForConversation, deleteFile } from '../services/storageService'
 import clsx from 'clsx'
 
-export default function SavedFilesModal({ onClose, onViewMedia }) {
+export default function SavedFilesModal({ onClose, onViewMedia, currentUser, peerUser }) {
   const [files, setFiles] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedTab, setSelectedTab] = useState('all')
 
   useEffect(() => {
     loadFiles()
-  }, [])
+  }, [currentUser, peerUser])
 
   const loadFiles = async () => {
     try {
-      const savedFiles = await getAllFiles()
+      const savedFiles = await getSavedFilesForConversation(currentUser, peerUser)
       setFiles(savedFiles.sort((a, b) => b.timestamp - a.timestamp))
     } catch (error) {
       console.error('Failed to load files:', error)
@@ -74,7 +74,7 @@ export default function SavedFilesModal({ onClose, onViewMedia }) {
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <div className="flex items-center gap-2">
             <Paperclip className="w-5 h-5 text-primary" />
-            <span className="font-semibold">Saved Files</span>
+            <span className="font-semibold">Saved Files{peerUser ? ` • ${peerUser}` : ''}</span>
             <span className="text-sm text-gray-400">({files.length})</span>
           </div>
           <button
@@ -117,8 +117,8 @@ export default function SavedFilesModal({ onClose, onViewMedia }) {
           ) : filteredFiles.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-gray-500">
               <Paperclip className="w-12 h-12 mb-3" />
-              <p>No saved files</p>
-              <p className="text-sm mt-1">Files you save will appear here</p>
+              <p>No saved files for this chat</p>
+              <p className="text-sm mt-1">Files saved in this conversation will appear here</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
