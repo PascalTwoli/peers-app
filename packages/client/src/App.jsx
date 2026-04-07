@@ -2331,7 +2331,9 @@ function App() {
 			}
 			return {
 				...prev,
-				[roomId]: prev[roomId].filter((participant) => participant !== username),
+				[roomId]: prev[roomId].filter(
+					(participant) => participant !== username,
+				),
 			};
 		});
 		setRoomMediaStateByUser({});

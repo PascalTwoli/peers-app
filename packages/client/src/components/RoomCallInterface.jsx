@@ -96,7 +96,11 @@ function ParticipantTile({
 					? "min-h-[18rem] lg:min-h-[24rem]"
 					: "min-h-32 lg:min-h-40",
 			)}>
-			<VideoSurface stream={stream} isSelf={isSelf} forceAvatar={avatarOnly} />
+			<VideoSurface
+				stream={stream}
+				isSelf={isSelf}
+				forceAvatar={avatarOnly}
+			/>
 
 			<div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent" />
 
@@ -199,7 +203,9 @@ function RoomChatPanel({
 										? "ml-6 bg-cyan-600/75 border-cyan-400/30"
 										: "mr-6 bg-white/10 border-white/10",
 								)}>
-								<p className="text-[10px] opacity-75 mb-1">{item.from}</p>
+								<p className="text-[10px] opacity-75 mb-1">
+									{item.from}
+								</p>
 								<p className="leading-relaxed whitespace-pre-wrap break-words">
 									{item.message}
 								</p>
@@ -303,7 +309,8 @@ export default function RoomCallInterface() {
 		() =>
 			participants.map((name) => ({
 				name,
-				stream: name === username ? roomLocalStream : roomRemoteStreams?.[name],
+				stream:
+					name === username ? roomLocalStream : roomRemoteStreams?.[name],
 				mediaState:
 					roomMediaStateByUser?.[name] ||
 					(name === username
@@ -331,17 +338,26 @@ export default function RoomCallInterface() {
 	);
 
 	const sharingParticipant = useMemo(() => {
-		const sharing = participantsWithState.find((participant) => participant.mediaState?.isScreenSharing);
+		const sharing = participantsWithState.find(
+			(participant) => participant.mediaState?.isScreenSharing,
+		);
 		return sharing?.name || null;
 	}, [participantsWithState]);
 
 	const focusParticipant =
 		pinnedParticipant && participants.includes(pinnedParticipant)
 			? pinnedParticipant
-			: sharingParticipant || roomActiveSpeaker || participants[0] || username;
+			: sharingParticipant ||
+				roomActiveSpeaker ||
+				participants[0] ||
+				username;
 
-	const focusedParticipantData = participantsWithState.find((participant) => participant.name === focusParticipant);
-	const remainingParticipants = participantsWithState.filter((participant) => participant.name !== focusParticipant);
+	const focusedParticipantData = participantsWithState.find(
+		(participant) => participant.name === focusParticipant,
+	);
+	const remainingParticipants = participantsWithState.filter(
+		(participant) => participant.name !== focusParticipant,
+	);
 
 	const roomThread = roomId ? roomMessages?.[roomId] || [] : [];
 	const otherMembersCount = Math.max((participants.length || 1) - 1, 0);
@@ -363,11 +379,18 @@ export default function RoomCallInterface() {
 	};
 
 	const getMessageStatusMeta = (message) => {
-		const deliveredBy = Array.isArray(message.deliveredBy) ? message.deliveredBy : [];
+		const deliveredBy = Array.isArray(message.deliveredBy)
+			? message.deliveredBy
+			: [];
 		const readBy = Array.isArray(message.readBy) ? message.readBy : [];
-		const deliveredCount = new Set(deliveredBy.filter((participant) => participant !== message.from)).size;
-		const readCount = new Set(readBy.filter((participant) => participant !== message.from)).size;
-		const allDelivered = otherMembersCount > 0 && deliveredCount >= otherMembersCount;
+		const deliveredCount = new Set(
+			deliveredBy.filter((participant) => participant !== message.from),
+		).size;
+		const readCount = new Set(
+			readBy.filter((participant) => participant !== message.from),
+		).size;
+		const allDelivered =
+			otherMembersCount > 0 && deliveredCount >= otherMembersCount;
 		const allRead = otherMembersCount > 0 && readCount >= otherMembersCount;
 		return { allDelivered, allRead, readCount };
 	};
@@ -376,7 +399,9 @@ export default function RoomCallInterface() {
 		return (
 			<div className="flex-1 flex items-center justify-center bg-black text-gray-300">
 				<div className="text-center">
-					<p className="text-lg font-medium">Room call is not active for you</p>
+					<p className="text-lg font-medium">
+						Room call is not active for you
+					</p>
 					<button
 						onClick={() => setCurrentView("room")}
 						className="mt-3 h-10 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-sm">
@@ -493,10 +518,9 @@ export default function RoomCallInterface() {
 			<div
 				className={clsx("flex-1 min-h-0", showChatPanel && "lg:grid")}
 				style={{
-					gridTemplateColumns:
-						showChatPanel
-							? `minmax(0,1fr) minmax(320px, ${chatWidthPercent}%)`
-							: "minmax(0,1fr)",
+					gridTemplateColumns: showChatPanel
+						? `minmax(0,1fr) minmax(320px, ${chatWidthPercent}%)`
+						: "minmax(0,1fr)",
 				}}>
 				<div className="min-h-0 p-3 lg:p-4 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_rgba(0,0,0,0)_45%)]">
 					{layoutMode === "grid" ? (
@@ -514,28 +538,50 @@ export default function RoomCallInterface() {
 									isFocused={participant.name === focusParticipant}
 									isSpeaking={roomActiveSpeaker === participant.name}
 									mediaState={participant.mediaState}
-									onPin={() => setPinnedParticipant((prev) => (prev === participant.name ? null : participant.name))}
+									onPin={() =>
+										setPinnedParticipant((prev) =>
+											prev === participant.name
+												? null
+												: participant.name,
+										)
+									}
 									isPinned={pinnedParticipant === participant.name}
 								/>
 							))}
 						</div>
 					) : (
-						<div className={clsx("h-full", layoutMode === "theater" ? "grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-3" : "grid grid-rows-[minmax(0,1fr)_auto] gap-3")}>
+						<div
+							className={clsx(
+								"h-full",
+								layoutMode === "theater"
+									? "grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-3"
+									: "grid grid-rows-[minmax(0,1fr)_auto] gap-3",
+							)}>
 							<ParticipantTile
 								name={focusedParticipantData?.name || username}
 								stream={focusedParticipantData?.stream}
-								isSelf={(focusedParticipantData?.name || username) === username}
+								isSelf={
+									(focusedParticipantData?.name || username) ===
+									username
+								}
 								isFocused
-								isSpeaking={roomActiveSpeaker === (focusedParticipantData?.name || username)}
+								isSpeaking={
+									roomActiveSpeaker ===
+									(focusedParticipantData?.name || username)
+								}
 								mediaState={focusedParticipantData?.mediaState}
 								onPin={() =>
 									setPinnedParticipant((prev) =>
-										prev === (focusedParticipantData?.name || username)
+										prev ===
+										(focusedParticipantData?.name || username)
 											? null
 											: focusedParticipantData?.name || username,
 									)
 								}
-								isPinned={pinnedParticipant === (focusedParticipantData?.name || username)}
+								isPinned={
+									pinnedParticipant ===
+									(focusedParticipantData?.name || username)
+								}
 								size="large"
 							/>
 
@@ -555,7 +601,9 @@ export default function RoomCallInterface() {
 											stream={participant.stream}
 											isSelf={participant.name === username}
 											isFocused={false}
-											isSpeaking={roomActiveSpeaker === participant.name}
+											isSpeaking={
+												roomActiveSpeaker === participant.name
+											}
 											mediaState={participant.mediaState}
 											onPin={() =>
 												setPinnedParticipant((prev) =>
@@ -564,7 +612,9 @@ export default function RoomCallInterface() {
 														: participant.name,
 												)
 											}
-											isPinned={pinnedParticipant === participant.name}
+											isPinned={
+												pinnedParticipant === participant.name
+											}
 										/>
 									</div>
 								))}
@@ -610,75 +660,75 @@ export default function RoomCallInterface() {
 
 			<div className="px-3 md:px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] border-t border-white/10 bg-black/80 backdrop-blur-sm">
 				<div className="grid grid-cols-4 gap-2 md:flex md:flex-wrap md:items-center md:justify-center md:gap-3">
-				<button
-					onClick={toggleRoomMute}
-					className={clsx(
-						"h-12 md:h-10 px-2 md:px-4 rounded-2xl md:rounded-full text-[11px] md:text-sm font-medium flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2",
-						roomIsMuted
-							? "bg-white text-black"
-							: "bg-white/10 hover:bg-white/20",
-					)}>
-					{roomIsMuted ? (
-						<MicOff className="w-4 h-4" />
-					) : (
-						<Mic className="w-4 h-4" />
-					)}
-					<span>{roomIsMuted ? "Unmute" : "Mute"}</span>
-				</button>
-				<button
-					onClick={toggleRoomVideo}
-					className={clsx(
-						"h-12 md:h-10 px-2 md:px-4 rounded-2xl md:rounded-full text-[11px] md:text-sm font-medium flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2",
-						roomIsVideoOff
-							? "bg-white text-black"
-							: "bg-white/10 hover:bg-white/20",
-					)}>
-					{roomIsVideoOff ? (
-						<VideoOff className="w-4 h-4" />
-					) : (
-						<Video className="w-4 h-4" />
-					)}
-					<span>{roomIsVideoOff ? "Cam On" : "Cam Off"}</span>
-				</button>
-				<button
-					onClick={toggleRoomScreenShare}
-					disabled={!canUseScreenShare && !roomIsScreenSharing}
-					className={clsx(
-						"h-12 md:h-10 px-2 md:px-4 rounded-2xl md:rounded-full text-[11px] md:text-sm font-medium flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2",
-						roomIsScreenSharing
-							? "bg-cyan-500 text-black"
-							: "bg-white/10 hover:bg-white/20",
-						!canUseScreenShare &&
-							!roomIsScreenSharing &&
-							"opacity-45 cursor-not-allowed",
-					)}>
-					{roomIsScreenSharing ? (
-						<ScreenShareOff className="w-4 h-4" />
-					) : (
-						<ScreenShare className="w-4 h-4" />
-					)}
-					<span>
-						{roomIsScreenSharing
-							? "Stop"
-							: canUseScreenShare
-								? "Share"
-								: "No Share"}
-					</span>
-				</button>
-				<button
-					onClick={handleLeaveRoomCall}
-					className="h-12 md:h-11 px-2 md:px-5 rounded-2xl md:rounded-full bg-red-500 hover:bg-red-600 text-white text-[11px] md:text-sm font-semibold flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2 shadow-lg shadow-red-500/30">
-					<PhoneOff className="w-4 h-4" />
-					<span>Leave</span>
-				</button>
-				{canEndCallForEveryone && (
 					<button
-						onClick={() => handleEndRoomCallForEveryone(roomId)}
-						className="col-span-4 md:col-span-1 h-10 md:h-11 px-4 rounded-2xl md:rounded-full bg-rose-600/90 hover:bg-rose-600 text-white text-xs md:text-sm font-semibold flex items-center justify-center gap-2">
-						<PhoneOff className="w-4 h-4" />
-						End For Everyone
+						onClick={toggleRoomMute}
+						className={clsx(
+							"h-12 md:h-10 px-2 md:px-4 rounded-2xl md:rounded-full text-[11px] md:text-sm font-medium flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2",
+							roomIsMuted
+								? "bg-white text-black"
+								: "bg-white/10 hover:bg-white/20",
+						)}>
+						{roomIsMuted ? (
+							<MicOff className="w-4 h-4" />
+						) : (
+							<Mic className="w-4 h-4" />
+						)}
+						<span>{roomIsMuted ? "Unmute" : "Mute"}</span>
 					</button>
-				)}
+					<button
+						onClick={toggleRoomVideo}
+						className={clsx(
+							"h-12 md:h-10 px-2 md:px-4 rounded-2xl md:rounded-full text-[11px] md:text-sm font-medium flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2",
+							roomIsVideoOff
+								? "bg-white text-black"
+								: "bg-white/10 hover:bg-white/20",
+						)}>
+						{roomIsVideoOff ? (
+							<VideoOff className="w-4 h-4" />
+						) : (
+							<Video className="w-4 h-4" />
+						)}
+						<span>{roomIsVideoOff ? "Cam On" : "Cam Off"}</span>
+					</button>
+					<button
+						onClick={toggleRoomScreenShare}
+						disabled={!canUseScreenShare && !roomIsScreenSharing}
+						className={clsx(
+							"h-12 md:h-10 px-2 md:px-4 rounded-2xl md:rounded-full text-[11px] md:text-sm font-medium flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2",
+							roomIsScreenSharing
+								? "bg-cyan-500 text-black"
+								: "bg-white/10 hover:bg-white/20",
+							!canUseScreenShare &&
+								!roomIsScreenSharing &&
+								"opacity-45 cursor-not-allowed",
+						)}>
+						{roomIsScreenSharing ? (
+							<ScreenShareOff className="w-4 h-4" />
+						) : (
+							<ScreenShare className="w-4 h-4" />
+						)}
+						<span>
+							{roomIsScreenSharing
+								? "Stop"
+								: canUseScreenShare
+									? "Share"
+									: "No Share"}
+						</span>
+					</button>
+					<button
+						onClick={handleLeaveRoomCall}
+						className="h-12 md:h-11 px-2 md:px-5 rounded-2xl md:rounded-full bg-red-500 hover:bg-red-600 text-white text-[11px] md:text-sm font-semibold flex flex-col md:flex-row items-center justify-center gap-1 md:gap-2 shadow-lg shadow-red-500/30">
+						<PhoneOff className="w-4 h-4" />
+						<span>Leave</span>
+					</button>
+					{canEndCallForEveryone && (
+						<button
+							onClick={() => handleEndRoomCallForEveryone(roomId)}
+							className="col-span-4 md:col-span-1 h-10 md:h-11 px-4 rounded-2xl md:rounded-full bg-rose-600/90 hover:bg-rose-600 text-white text-xs md:text-sm font-semibold flex items-center justify-center gap-2">
+							<PhoneOff className="w-4 h-4" />
+							End For Everyone
+						</button>
+					)}
 				</div>
 			</div>
 

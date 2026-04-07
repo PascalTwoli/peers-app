@@ -412,45 +412,44 @@ export function useRoomWebRTC({
 		}
 	}, [roomId, sendOfferWithRetry]);
 
-	const replaceOutgoingVideoTrack = useCallback(
-		async (newTrack, stream) => {
-			for (const [peer, pc] of peerConnectionsRef.current.entries()) {
-				const sender = pc
-					.getSenders()
-					.find((item) => item.track?.kind === "video" || item.track === null);
+	const replaceOutgoingVideoTrack = useCallback(async (newTrack, stream) => {
+		for (const [peer, pc] of peerConnectionsRef.current.entries()) {
+			const sender = pc
+				.getSenders()
+				.find(
+					(item) => item.track?.kind === "video" || item.track === null,
+				);
 
-				if (sender) {
-					try {
-						await sender.replaceTrack(newTrack || null);
-					} catch (error) {
-						console.error(
-							"Failed to replace outgoing room video track for peer",
-							peer,
-							error,
-						);
-					}
-					continue;
+			if (sender) {
+				try {
+					await sender.replaceTrack(newTrack || null);
+				} catch (error) {
+					console.error(
+						"Failed to replace outgoing room video track for peer",
+						peer,
+						error,
+					);
 				}
-
-				if (newTrack && stream) {
-					pc.addTrack(newTrack, stream);
-				}
+				continue;
 			}
-		},
-		[],
-	);
+
+			if (newTrack && stream) {
+				pc.addTrack(newTrack, stream);
+			}
+		}
+	}, []);
 
 	const tuneVideoSender = useCallback(async (pc) => {
-		const sender = pc.getSenders().find((item) => item.track?.kind === "video");
+		const sender = pc
+			.getSenders()
+			.find((item) => item.track?.kind === "video");
 		if (!sender?.getParameters || !sender?.setParameters) {
 			return;
 		}
 
 		try {
 			const params = sender.getParameters() || {};
-			const encodings = params.encodings?.length
-				? params.encodings
-				: [{}];
+			const encodings = params.encodings?.length ? params.encodings : [{}];
 			encodings[0].maxBitrate = 3_000_000;
 			encodings[0].maxFramerate = 30;
 			params.encodings = encodings;
@@ -464,13 +463,18 @@ export function useRoomWebRTC({
 		for (const pc of peerConnectionsRef.current.values()) {
 			const sender = pc
 				.getSenders()
-				.find((item) => item.track?.kind === "audio" || item.track === null);
+				.find(
+					(item) => item.track?.kind === "audio" || item.track === null,
+				);
 
 			if (sender) {
 				try {
 					await sender.replaceTrack(newTrack || null);
 				} catch (error) {
-					console.error("Failed to replace outgoing room audio track:", error);
+					console.error(
+						"Failed to replace outgoing room audio track:",
+						error,
+					);
 				}
 				continue;
 			}
@@ -522,7 +526,9 @@ export function useRoomWebRTC({
 			track.enabled = !nextMuted;
 		}
 		for (const pc of peerConnectionsRef.current.values()) {
-			const sender = pc.getSenders().find((item) => item.track?.kind === "audio");
+			const sender = pc
+				.getSenders()
+				.find((item) => item.track?.kind === "audio");
 			if (sender?.track) {
 				sender.track.enabled = !nextMuted;
 			}
@@ -650,7 +656,10 @@ export function useRoomWebRTC({
 				setLocalStream(stream.clone());
 				return;
 			} catch (error) {
-				console.error("Failed to restore camera after screen share:", error);
+				console.error(
+					"Failed to restore camera after screen share:",
+					error,
+				);
 				onError?.(
 					"Could not restore camera after screen sharing. You may need to re-enable video.",
 				);
@@ -661,11 +670,14 @@ export function useRoomWebRTC({
 		}
 
 		try {
-			const displayStream = await getDisplayMedia.call(navigator.mediaDevices, {
-				video: {
-					frameRate: { ideal: 30, max: 60 },
+			const displayStream = await getDisplayMedia.call(
+				navigator.mediaDevices,
+				{
+					video: {
+						frameRate: { ideal: 30, max: 60 },
+					},
 				},
-			});
+			);
 			const displayTrack = displayStream.getVideoTracks()[0];
 			if (!displayTrack) {
 				onError?.("No shareable screen source was selected.");
