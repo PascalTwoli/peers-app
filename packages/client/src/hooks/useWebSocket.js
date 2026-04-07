@@ -25,9 +25,19 @@ export function useWebSocket({
 	onRoomList,
 	onRoomJoinRequest,
 	onRoomChat,
+	onRoomMessageStatus,
 	onRoomCreated,
 	onRoomInvite,
 	onRoomInviteResult,
+	onRoomCallStarted,
+	onRoomCallParticipants,
+	onRoomCallEnded,
+	onRoomMediaState,
+	onRoomWebRTCOffer,
+	onRoomWebRTCAnswer,
+	onRoomWebRTCIce,
+	onVideoUpgradeRequest,
+	onVideoUpgradeResponse,
 	showToast,
 }) {
 	const wsRef = useRef(null);
@@ -62,9 +72,19 @@ export function useWebSocket({
 		onRoomList,
 		onRoomJoinRequest,
 		onRoomChat,
+		onRoomMessageStatus,
 		onRoomCreated,
 		onRoomInvite,
 		onRoomInviteResult,
+		onRoomCallStarted,
+		onRoomCallParticipants,
+		onRoomCallEnded,
+		onRoomMediaState,
+		onRoomWebRTCOffer,
+		onRoomWebRTCAnswer,
+		onRoomWebRTCIce,
+		onVideoUpgradeRequest,
+		onVideoUpgradeResponse,
 		showToast,
 	});
 
@@ -93,9 +113,19 @@ export function useWebSocket({
 			onRoomList,
 			onRoomJoinRequest,
 			onRoomChat,
+			onRoomMessageStatus,
 			onRoomCreated,
 			onRoomInvite,
 			onRoomInviteResult,
+			onRoomCallStarted,
+			onRoomCallParticipants,
+			onRoomCallEnded,
+			onRoomMediaState,
+			onRoomWebRTCOffer,
+			onRoomWebRTCAnswer,
+			onRoomWebRTCIce,
+			onVideoUpgradeRequest,
+			onVideoUpgradeResponse,
 			showToast,
 		};
 	});
@@ -310,6 +340,10 @@ export function useWebSocket({
 							cb.onRoomChat?.(data);
 							break;
 
+						case "room_message_status":
+							cb.onRoomMessageStatus?.(data);
+							break;
+
 						case "room_created":
 							cb.onRoomCreated?.(data);
 							break;
@@ -320,6 +354,42 @@ export function useWebSocket({
 
 						case "room_invite_result":
 							cb.onRoomInviteResult?.(data);
+							break;
+
+						case "room_call_started":
+							cb.onRoomCallStarted?.(data);
+							break;
+
+						case "room_call_participants":
+							cb.onRoomCallParticipants?.(data);
+							break;
+
+						case "room_call_ended":
+							cb.onRoomCallEnded?.(data);
+							break;
+
+						case "room_media_state":
+							cb.onRoomMediaState?.(data);
+							break;
+
+						case "room_webrtc_offer":
+							cb.onRoomWebRTCOffer?.(data);
+							break;
+
+						case "room_webrtc_answer":
+							cb.onRoomWebRTCAnswer?.(data);
+							break;
+
+						case "room_webrtc_ice":
+							cb.onRoomWebRTCIce?.(data);
+							break;
+
+						case "video_upgrade_request":
+							cb.onVideoUpgradeRequest?.(data);
+							break;
+
+						case "video_upgrade_response":
+							cb.onVideoUpgradeResponse?.(data);
 							break;
 
 						case "delivered":

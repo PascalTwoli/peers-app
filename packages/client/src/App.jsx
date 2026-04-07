@@ -6,6 +6,7 @@ import ToastContainer from "./components/ToastContainer";
 import CallEndedModal from "./components/CallEndedModal";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useWebRTC } from "./hooks/useWebRTC";
+import { useRoomWebRTC } from "./hooks/useRoomWebRTC";
 import { useAudio } from "./hooks/useAudio";
 import { AppContext } from "./context/AppContext";
 import {
@@ -104,6 +105,9 @@ function App() {
 	const [isCallActive, setIsCallActive] = useState(false);
 	const [callType, setCallType] = useState("video");
 	const [incomingCall, setIncomingCall] = useState(null);
+	const [incomingVideoUpgradeRequest, setIncomingVideoUpgradeRequest] =
+		useState(null);
+	const [isVideoUpgradePending, setIsVideoUpgradePending] = useState(false);
 	const [isCalling, setIsCalling] = useState(false);
 	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const [typingUsers, setTypingUsers] = useState({}); // { username: timestamp }
@@ -123,6 +127,13 @@ function App() {
 		selectedUsers: [],
 	});
 	const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+	const [roomCallSession, setRoomCallSession] = useState(null);
+	const [roomCallIncomingByRoom, setRoomCallIncomingByRoom] = useState({});
+	const [roomCallParticipantsByRoom, setRoomCallParticipantsByRoom] = useState(
+		{},
+	);
+	const [roomCallLastJoinedByRoom, setRoomCallLastJoinedByRoom] = useState({});
+	const [roomMediaStateByUser, setRoomMediaStateByUser] = useState({});
 
 	// Audio hooks for call tones and notifications
 	const {
@@ -268,9 +279,17 @@ function App() {
 	// Refs to hold WebRTC handlers (set after useWebRTC is initialized)
 	const handleAnswerRef = useRef(null);
 	const handleIceCandidateRef = useRef(null);
+	const handleRoomOfferRef = useRef(null);
+	const handleRoomAnswerRef = useRef(null);
+	const handleRoomIceRef = useRef(null);
+	const roomCleanupRef = useRef(null);
 	const sendMessageRef = useRef(null);
+	const upgradeToVideoRef = useRef(null);
 	const selectedUserRef = useRef(null);
+	const selectedRoomIdRef = useRef(null);
 	const currentViewRef = useRef("placeholder");
+	const isCallActiveRef = useRef(false);
+	const callPeerRef = useRef(null);
 	const callTimeoutRef = useRef(null);
 	const callStartTimeRef = useRef(null);
 	const incomingChunkBufferRef = useRef(new Map());
@@ -314,6 +333,18 @@ function App() {
 	useEffect(() => {
 		currentViewRef.current = currentView;
 	}, [currentView]);
+
+	useEffect(() => {
+		selectedRoomIdRef.current = selectedRoomId;
+	}, [selectedRoomId]);
+
+	useEffect(() => {
+		isCallActiveRef.current = isCallActive;
+	}, [isCallActive]);
+
+	useEffect(() => {
+		callPeerRef.current = callPeer;
+	}, [callPeer]);
 
 	// WebSocket connection
 	const { sendMessage, isConnected } = useWebSocket({
@@ -595,6 +626,7 @@ function App() {
 				return;
 			}
 			setLastInviteLink(data.link);
+			setCurrentView("invite");
 			navigator.clipboard
 				.writeText(data.link)
 				.then(() => showToast("Invite link copied to clipboard", "success"))
@@ -661,8 +693,61 @@ function App() {
 				);
 			}
 		},
+		onRoomMessageStatus: (data) => {
+			if (
+				!data?.roomId ||
+				!data?.messageId ||
+				!data?.from ||
+				!data?.status
+			) {
+				return;
+			}
+
+			setRoomMessages((prev) => {
+				const existing = prev[data.roomId] || [];
+				const next = existing.map((message) => {
+					if (message.messageId !== data.messageId) {
+						return message;
+					}
+
+					const deliveredBy = Array.isArray(message.deliveredBy)
+						? message.deliveredBy
+						: [];
+					const readBy = Array.isArray(message.readBy)
+						? message.readBy
+						: [];
+
+					if (data.status === "read") {
+						return {
+							...message,
+							status: "read",
+							deliveredBy: Array.from(
+								new Set([...deliveredBy, data.from]),
+							),
+							readBy: Array.from(new Set([...readBy, data.from])),
+						};
+					}
+
+					return {
+						...message,
+						status:
+							message.status === "pending" ? "sent" : message.status,
+						deliveredBy: Array.from(new Set([...deliveredBy, data.from])),
+					};
+				});
+
+				return {
+					...prev,
+					[data.roomId]: next,
+				};
+			});
+		},
 		onRoomChat: (data) => {
 			if (data?.from && data?.roomId && data?.message) {
+				const isMe = data.from === username;
+				const shouldMarkReadNow =
+					!isMe && selectedRoomIdRef.current === data.roomId;
+
 				setRoomMessages((prev) => {
 					const existing = prev[data.roomId] || [];
 					const messageId =
@@ -676,10 +761,24 @@ function App() {
 
 					if (existingIndex >= 0) {
 						const next = [...existing];
+						const deliveredBy = Array.isArray(
+							next[existingIndex].deliveredBy,
+						)
+							? next[existingIndex].deliveredBy
+							: [];
+						const readBy = Array.isArray(next[existingIndex].readBy)
+							? next[existingIndex].readBy
+							: [];
 						next[existingIndex] = {
 							...next[existingIndex],
 							status: "sent",
 							timestamp: data.timestamp || next[existingIndex].timestamp,
+							deliveredBy: Array.from(
+								new Set([...deliveredBy, data.from]),
+							),
+							readBy: shouldMarkReadNow
+								? Array.from(new Set([...readBy, username]))
+								: readBy,
 						};
 						return {
 							...prev,
@@ -697,16 +796,176 @@ function App() {
 								message: data.message,
 								timestamp: data.timestamp || Date.now(),
 								status: "sent",
-								isMe: data.from === username,
+								isMe,
+								deliveredBy: [data.from],
+								readBy: shouldMarkReadNow ? [username] : [],
 							},
 						],
 					};
 				});
+
+				if (!isMe) {
+					sendMessageRef.current?.({
+						type: "room_message_status",
+						to: data.from,
+						roomId: data.roomId,
+						messageId: data.messageId,
+						status: "delivered",
+					});
+
+					if (shouldMarkReadNow) {
+						sendMessageRef.current?.({
+							type: "room_message_status",
+							to: data.from,
+							roomId: data.roomId,
+							messageId: data.messageId,
+							status: "read",
+						});
+					}
+				}
 				showToast(
 					`[Room ${data.roomId.slice(0, 6)}] ${data.from}: ${data.message}`,
 					"message",
 				);
 			}
+		},
+		onRoomCallStarted: (data) => {
+			if (!data?.roomId || !data?.startedBy) {
+				return;
+			}
+
+			setRoomCallParticipantsByRoom((prev) => ({
+				...prev,
+				[data.roomId]: prev[data.roomId] || [],
+			}));
+
+			if (data.startedBy !== username) {
+				setRoomCallIncomingByRoom((prev) => ({
+					...prev,
+					[data.roomId]: data.startedBy,
+				}));
+				showToast(`${data.startedBy} started a room call`, "info");
+			}
+		},
+		onRoomCallParticipants: (data) => {
+			if (!data?.roomId || !Array.isArray(data.participants)) {
+				return;
+			}
+
+			setRoomCallParticipantsByRoom((prev) => ({
+				...prev,
+				[data.roomId]: data.participants,
+			}));
+
+			setRoomCallSession((prev) => {
+				const sameRoom = prev?.roomId === data.roomId;
+				if (!sameRoom && !data.participants.includes(username)) {
+					return prev;
+				}
+
+				return {
+					roomId: data.roomId,
+					participants: data.participants,
+					joined: data.participants.includes(username),
+				};
+			});
+
+			if (data.participants.includes(username)) {
+				setRoomCallLastJoinedByRoom((prev) => ({
+					...prev,
+					[data.roomId]: true,
+				}));
+
+				setRoomCallIncomingByRoom((prev) => {
+					if (!prev[data.roomId]) {
+						return prev;
+					}
+					const next = { ...prev };
+					delete next[data.roomId];
+					return next;
+				});
+
+				setRoomMediaStateByUser((prev) => {
+					const next = {};
+					for (const participant of data.participants) {
+						if (prev[participant]) {
+							next[participant] = prev[participant];
+						}
+					}
+					if (!next[username]) {
+						next[username] = {
+							isMuted: false,
+							isVideoOff: false,
+							isScreenSharing: false,
+						};
+					}
+					return next;
+				});
+			}
+		},
+		onRoomMediaState: (data) => {
+			if (!data?.roomId || !data?.from) {
+				return;
+			}
+
+			setRoomMediaStateByUser((prev) => ({
+				...prev,
+				[data.from]: {
+					isMuted: Boolean(data.isMuted),
+					isVideoOff: Boolean(data.isVideoOff),
+					isScreenSharing: Boolean(data.isScreenSharing),
+				},
+			}));
+		},
+		onRoomCallEnded: (data) => {
+			if (!data?.roomId) {
+				return;
+			}
+
+			setRoomCallParticipantsByRoom((prev) => {
+				if (!(data.roomId in prev)) {
+					return prev;
+				}
+				const next = { ...prev };
+				delete next[data.roomId];
+				return next;
+			});
+			setRoomCallLastJoinedByRoom((prev) => {
+				if (!(data.roomId in prev)) {
+					return prev;
+				}
+				const next = { ...prev };
+				delete next[data.roomId];
+				return next;
+			});
+
+			setRoomCallSession((prev) =>
+				prev?.roomId === data.roomId ? null : prev,
+			);
+			setRoomCallIncomingByRoom((prev) => {
+				if (!prev[data.roomId]) {
+					return prev;
+				}
+				const next = { ...prev };
+				delete next[data.roomId];
+				return next;
+			});
+
+			if (currentViewRef.current === "room-call") {
+				setCurrentView("room");
+			}
+			roomCleanupRef.current?.();
+			setRoomMediaStateByUser({});
+			showToast("Room call ended", "info");
+		},
+		onRoomWebRTCOffer: (data) => {
+			handleRoomOfferRef.current?.(data);
+		},
+		onRoomWebRTCAnswer: (data) => {
+			handleRoomAnswerRef.current?.(data);
+		},
+		onRoomWebRTCIce: (data) => {
+			handleRoomIceRef.current?.(data);
 		},
 		onRoomCreated: (data) => {
 			if (!data?.roomId) {
@@ -781,10 +1040,16 @@ function App() {
 			);
 
 			// If this is a video upgrade during an existing call, handle it silently
-			if (data.isUpgrade && isCallActive) {
+			if (
+				data.isUpgrade &&
+				isCallActiveRef.current &&
+				callPeerRef.current === data.from
+			) {
 				// Handle renegotiation for video upgrade without showing incoming call modal
 				handleAnswerRef.current?.(data);
 				setCallType("video");
+				setIncomingVideoUpgradeRequest(null);
+				setIsVideoUpgradePending(false);
 				return;
 			}
 
@@ -859,6 +1124,8 @@ function App() {
 			setIsCallActive(false);
 			setIsCalling(false);
 			setCallPeer(null);
+			setIncomingVideoUpgradeRequest(null);
+			setIsVideoUpgradePending(false);
 			if (currentViewRef.current === "video") {
 				setCurrentView("chat");
 			}
@@ -976,6 +1243,8 @@ function App() {
 			callStartTimeRef.current = null;
 			setIsCallActive(false);
 			setIsCalling(false);
+			setIncomingVideoUpgradeRequest(null);
+			setIsVideoUpgradePending(false);
 		},
 		onVideoToggle: (data) => {
 			// Remote user toggled their video
@@ -983,7 +1252,71 @@ function App() {
 				setRemoteVideoOff(!data.enabled);
 			}
 		},
+		onVideoUpgradeRequest: (data) => {
+			if (!data?.from) {
+				return;
+			}
+
+			if (isCallActiveRef.current && callPeerRef.current === data.from) {
+				setIncomingVideoUpgradeRequest({
+					from: data.from,
+					timestamp: Date.now(),
+				});
+				showToast(`${data.from} wants to enable video`, "info");
+				return;
+			}
+
+			sendMessageRef.current?.({
+				type: "video_upgrade_response",
+				to: data.from,
+				accepted: false,
+			});
+		},
+		onVideoUpgradeResponse: async (data) => {
+			if (!data?.from || !isVideoUpgradePending) {
+				return;
+			}
+
+			setIsVideoUpgradePending(false);
+
+			if (!data.accepted) {
+				showToast(`${data.from} declined video upgrade`, "info");
+				return;
+			}
+
+			try {
+				await upgradeToVideoRef.current?.(data.from);
+				setCallType("video");
+				showToast(`${data.from} accepted video upgrade`, "success");
+			} catch (error) {
+				showToast(
+					error.message || "Unable to start camera for video upgrade",
+					"danger",
+				);
+			}
+		},
 		showToast,
+	});
+
+	const {
+		localStream: roomLocalStream,
+		remoteStreams: roomRemoteStreams,
+		isMuted: roomIsMuted,
+		isVideoOff: roomIsVideoOff,
+		isScreenSharing: roomIsScreenSharing,
+		activeSpeaker: roomActiveSpeaker,
+		toggleMute: toggleRoomMute,
+		toggleVideo: toggleRoomVideo,
+		toggleScreenShare: toggleRoomScreenShare,
+		handleOffer: handleRoomOffer,
+		handleAnswer: handleRoomAnswer,
+		handleIce: handleRoomIce,
+		cleanup: cleanupRoomMedia,
+	} = useRoomWebRTC({
+		sendMessage,
+		username,
+		roomCallSession,
+		onError: (message) => showToast(message, "danger"),
 	});
 
 	// WebRTC
@@ -995,6 +1328,7 @@ function App() {
 		endCall,
 		toggleMute,
 		toggleVideo,
+		upgradeToVideo,
 		flipCamera,
 		isScreenSharing,
 		toggleScreenShare,
@@ -1020,6 +1354,8 @@ function App() {
 		onCallEnded: () => {
 			setIsCallActive(false);
 			setIsCalling(false);
+			setIncomingVideoUpgradeRequest(null);
+			setIsVideoUpgradePending(false);
 			setCallStartTime(null);
 			if (selectedUser) {
 				setCurrentView("chat");
@@ -1033,7 +1369,20 @@ function App() {
 	useEffect(() => {
 		handleAnswerRef.current = handleAnswer;
 		handleIceCandidateRef.current = handleIceCandidate;
-	}, [handleAnswer, handleIceCandidate]);
+		upgradeToVideoRef.current = upgradeToVideo;
+		handleRoomOfferRef.current = handleRoomOffer;
+		handleRoomAnswerRef.current = handleRoomAnswer;
+		handleRoomIceRef.current = handleRoomIce;
+		roomCleanupRef.current = cleanupRoomMedia;
+	}, [
+		handleAnswer,
+		handleIceCandidate,
+		upgradeToVideo,
+		handleRoomOffer,
+		handleRoomAnswer,
+		handleRoomIce,
+		cleanupRoomMedia,
+	]);
 
 	// Update sendMessageRef
 	useEffect(() => {
@@ -1261,6 +1610,71 @@ function App() {
 		setIncomingCall(null);
 	}, [incomingCall, sendMessage, addCallLog]);
 
+	const handleAcceptVideoUpgrade = useCallback(() => {
+		if (!incomingVideoUpgradeRequest) {
+			return;
+		}
+
+		sendMessage({
+			type: "video_upgrade_response",
+			to: incomingVideoUpgradeRequest.from,
+			accepted: true,
+		});
+		setIncomingVideoUpgradeRequest(null);
+		showToast("Video upgrade accepted", "success");
+	}, [incomingVideoUpgradeRequest, sendMessage, showToast]);
+
+	const handleDeclineVideoUpgrade = useCallback(() => {
+		if (!incomingVideoUpgradeRequest) {
+			return;
+		}
+
+		sendMessage({
+			type: "video_upgrade_response",
+			to: incomingVideoUpgradeRequest.from,
+			accepted: false,
+		});
+		setIncomingVideoUpgradeRequest(null);
+		showToast("Video upgrade declined", "info");
+	}, [incomingVideoUpgradeRequest, sendMessage, showToast]);
+
+	const handleToggleVideo = useCallback(async () => {
+		if (!localStream) {
+			return;
+		}
+
+		const hasVideoTrack = localStream.getVideoTracks().length > 0;
+		if (hasVideoTrack) {
+			toggleVideo();
+			return;
+		}
+
+		if (!isCallActive || !callPeer) {
+			showToast("Start a call before enabling video", "info");
+			return;
+		}
+
+		if (isVideoUpgradePending) {
+			showToast("Waiting for video permission from peer", "info");
+			return;
+		}
+
+		sendMessage({
+			type: "video_upgrade_request",
+			to: callPeer,
+		});
+		setIsVideoUpgradePending(true);
+		showToast("Video permission request sent", "info");
+	}, [
+		localStream,
+		toggleVideo,
+		isCallActive,
+		callPeer,
+		isVideoUpgradePending,
+		sendMessage,
+		showToast,
+	]);
+
 	const handleHangup = useCallback(() => {
 		// Clear timeout if call ends before timeout
 		if (callTimeoutRef.current) {
@@ -1293,6 +1707,8 @@ function App() {
 		setIsCallActive(false);
 		setIsCalling(false);
 		setCallPeer(null);
+		setIncomingVideoUpgradeRequest(null);
+		setIsVideoUpgradePending(false);
 		callStartTimeRef.current = null;
 		setCurrentView("chat");
 	}, [endCall, callPeer, selectedUser, sendMessage, isCallActive, addCallLog]);
@@ -1656,6 +2072,10 @@ function App() {
 		sendMessage({ type: "create_invite" });
 	}, [sendMessage]);
 
+	const handleOpenInviteCenter = useCallback(() => {
+		setCurrentView("invite");
+	}, []);
+
 	const handleOpenRoomComposer = useCallback(() => {
 		setSelectedUser(null);
 		setCurrentView("room-create");
@@ -1790,6 +2210,8 @@ function App() {
 						timestamp,
 						status: "pending",
 						isMe: true,
+						deliveredBy: [username],
+						readBy: [username],
 					},
 				],
 			}));
@@ -1804,6 +2226,220 @@ function App() {
 		},
 		[sendMessage, username],
 	);
+
+	const handleStartRoomCall = useCallback(
+		(roomId) => {
+			if (!roomId) {
+				return;
+			}
+
+			sendMessage({ type: "room_call_start", roomId });
+			sendMessage({ type: "room_call_join", roomId });
+			setRoomCallSession({
+				roomId,
+				participants: [username],
+				joined: true,
+			});
+			setRoomCallParticipantsByRoom((prev) => ({
+				...prev,
+				[roomId]: Array.from(new Set([...(prev[roomId] || []), username])),
+			}));
+			setRoomCallLastJoinedByRoom((prev) => ({
+				...prev,
+				[roomId]: true,
+			}));
+			setRoomMediaStateByUser({
+				[username]: {
+					isMuted: roomIsMuted,
+					isVideoOff: roomIsVideoOff,
+					isScreenSharing: roomIsScreenSharing,
+				},
+			});
+			setRoomCallIncomingByRoom((prev) => {
+				if (!prev[roomId]) {
+					return prev;
+				}
+				const next = { ...prev };
+				delete next[roomId];
+				return next;
+			});
+			setCurrentView("room-call");
+		},
+		[roomIsMuted, roomIsScreenSharing, roomIsVideoOff, sendMessage, username],
+	);
+
+	const handleJoinRoomCall = useCallback(
+		(roomId) => {
+			if (!roomId) {
+				return;
+			}
+
+			sendMessage({ type: "room_call_join", roomId });
+			setRoomCallSession((prev) => ({
+				roomId,
+				participants: prev?.roomId === roomId ? prev.participants : [],
+				joined: true,
+			}));
+			setRoomCallParticipantsByRoom((prev) => ({
+				...prev,
+				[roomId]: Array.from(new Set([...(prev[roomId] || []), username])),
+			}));
+			setRoomCallLastJoinedByRoom((prev) => ({
+				...prev,
+				[roomId]: true,
+			}));
+			setRoomMediaStateByUser((prev) => ({
+				...prev,
+				[username]: {
+					isMuted: roomIsMuted,
+					isVideoOff: roomIsVideoOff,
+					isScreenSharing: roomIsScreenSharing,
+				},
+			}));
+			setRoomCallIncomingByRoom((prev) => {
+				if (!prev[roomId]) {
+					return prev;
+				}
+				const next = { ...prev };
+				delete next[roomId];
+				return next;
+			});
+			setCurrentView("room-call");
+		},
+		[roomIsMuted, roomIsScreenSharing, roomIsVideoOff, sendMessage, username],
+	);
+
+	const handleLeaveRoomCall = useCallback(() => {
+		if (!roomCallSession?.roomId) {
+			cleanupRoomMedia();
+			setRoomMediaStateByUser({});
+			setCurrentView("room");
+			return;
+		}
+
+		const roomId = roomCallSession.roomId;
+
+		sendMessage({
+			type: "room_call_leave",
+			roomId,
+		});
+		cleanupRoomMedia();
+		setRoomCallSession(null);
+		setRoomCallParticipantsByRoom((prev) => {
+			if (!prev[roomId]) {
+				return prev;
+			}
+			return {
+				...prev,
+				[roomId]: prev[roomId].filter((participant) => participant !== username),
+			};
+		});
+		setRoomMediaStateByUser({});
+		setCurrentView("room");
+	}, [roomCallSession, sendMessage, cleanupRoomMedia, username]);
+
+	const handleEndRoomCallForEveryone = useCallback(
+		(roomId) => {
+			if (!roomId) {
+				return;
+			}
+
+			sendMessage({
+				type: "room_call_end",
+				roomId,
+			});
+		},
+		[sendMessage],
+	);
+
+	useEffect(() => {
+		if (!roomCallSession?.joined || !roomCallSession.roomId) {
+			return;
+		}
+
+		setRoomMediaStateByUser((prev) => ({
+			...prev,
+			[username]: {
+				isMuted: roomIsMuted,
+				isVideoOff: roomIsVideoOff,
+				isScreenSharing: roomIsScreenSharing,
+			},
+		}));
+	}, [
+		roomCallSession?.joined,
+		roomCallSession?.roomId,
+		roomIsMuted,
+		roomIsVideoOff,
+		roomIsScreenSharing,
+		username,
+	]);
+
+	useEffect(() => {
+		if (!selectedRoomId) {
+			return;
+		}
+
+		const roomId = selectedRoomId;
+		setRoomMessages((prev) => {
+			const existing = prev[roomId] || [];
+			let hasChanges = false;
+
+			const next = existing.map((message) => {
+				if (message.isMe || !message.messageId || !message.from) {
+					return message;
+				}
+
+				const readBy = Array.isArray(message.readBy) ? message.readBy : [];
+				if (readBy.includes(username)) {
+					return message;
+				}
+
+				hasChanges = true;
+				sendMessageRef.current?.({
+					type: "room_message_status",
+					to: message.from,
+					roomId,
+					messageId: message.messageId,
+					status: "read",
+				});
+
+				const deliveredBy = Array.isArray(message.deliveredBy)
+					? message.deliveredBy
+					: [];
+
+				return {
+					...message,
+					deliveredBy: Array.from(new Set([...deliveredBy, username])),
+					readBy: Array.from(new Set([...readBy, username])),
+				};
+			});
+
+			if (!hasChanges) {
+				return prev;
+			}
+
+			return {
+				...prev,
+				[roomId]: next,
+			};
+		});
+	}, [selectedRoomId, username]);
+
+	useEffect(() => {
+		if (!isConnected || !roomCallSession?.joined || !roomCallSession.roomId) {
+			return;
+		}
+
+		sendMessage({
+			type: "room_call_join",
+			roomId: roomCallSession.roomId,
+		});
+	}, [
+		isConnected,
+		roomCallSession?.joined,
+		roomCallSession?.roomId,
+		sendMessage,
+	]);
 
 	// Auto-clear typing status after 3 seconds of inactivity
 	useEffect(() => {
@@ -1839,6 +2475,12 @@ function App() {
 		selectedUser,
 		selectedRoom,
 		selectedRoomId,
+		roomCallSession,
+		roomCallIncomingByRoom,
+		roomCallParticipantsByRoom,
+		roomCallLastJoinedByRoom,
+		roomMediaStateByUser,
+		roomActiveSpeaker,
 		callPeer,
 		onlineUsers,
 		allUsers,
@@ -1859,13 +2501,20 @@ function App() {
 		callStartTime,
 		isCalling,
 		incomingCall,
+		incomingVideoUpgradeRequest,
+		isVideoUpgradePending,
 		sidebarOpen,
 		localStream,
 		remoteStream,
+		roomLocalStream,
+		roomRemoteStreams,
 		isMuted,
 		isVideoOff,
+		roomIsMuted,
+		roomIsVideoOff,
 		remoteVideoOff,
 		isScreenSharing,
+		roomIsScreenSharing,
 		callStats,
 		sendMessage,
 		setSelectedUser: handleSelectUser,
@@ -1874,12 +2523,15 @@ function App() {
 		handleStartCall,
 		handleAnswerCall,
 		handleRejectCall,
+		handleAcceptVideoUpgrade,
+		handleDeclineVideoUpgrade,
 		handleHangup,
 		handleSendMessage,
 		handleSendFileUpload,
 		handleEditMessage,
 		handleReactToMessage,
 		handleCreateInviteLink,
+		handleOpenInviteCenter,
 		handleOpenRoomComposer,
 		handleUpdateRoomComposer,
 		handleCreateRoom,
@@ -1890,13 +2542,20 @@ function App() {
 		handleInviteUsersToRoom,
 		handleRespondToRoomInvite,
 		handleSendRoomMessage,
+		handleStartRoomCall,
+		handleJoinRoomCall,
+		handleEndRoomCallForEveryone,
+		handleLeaveRoomCall,
 		sendTypingStatus,
 		handleLogout,
 		showToast,
 		toggleMute,
-		toggleVideo: () => toggleVideo(() => setCallType("video")),
+		toggleVideo: handleToggleVideo,
+		toggleRoomMute,
+		toggleRoomVideo,
 		flipCamera,
 		toggleScreenShare,
+		toggleRoomScreenShare,
 		deleteLocalMessages,
 	};
 

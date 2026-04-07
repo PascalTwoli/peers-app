@@ -33,7 +33,7 @@ export default function Sidebar() {
 		sidebarOpen,
 		setSidebarOpen,
 		handleLogout,
-		handleCreateInviteLink,
+		handleOpenInviteCenter,
 		handleOpenRoomComposer,
 		handleOpenRoom,
 		handleRequestJoinRoom,
@@ -492,9 +492,9 @@ export default function Sidebar() {
 										</div>
 									)}
 									<button
-										onClick={handleCreateInviteLink}
+										onClick={handleOpenInviteCenter}
 										className="w-full h-11 rounded-xl bg-cyan-600/25 hover:bg-cyan-600/35 text-cyan-100 font-medium text-sm transition-colors">
-										Generate Invite Link
+										Open Invite Center
 									</button>
 									<div className="rounded-xl border border-white/10 bg-white/5 p-3">
 										<p className="text-xs uppercase tracking-[0.15em] text-gray-400 mb-2">
@@ -518,7 +518,7 @@ export default function Sidebar() {
 											</>
 										) : (
 											<p className="text-sm text-gray-500">
-												No link generated yet.
+												No link generated yet. Open Invite Center to create one.
 											</p>
 										)}
 									</div>

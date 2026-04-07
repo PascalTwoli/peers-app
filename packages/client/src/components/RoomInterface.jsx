@@ -1,6 +1,16 @@
 import { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
-import { ArrowLeft, Users, Send, PlusCircle, Check, Clock } from "lucide-react";
+import {
+	ArrowLeft,
+	Users,
+	Send,
+	PlusCircle,
+	Check,
+	CheckCheck,
+	Clock,
+	Phone,
+	PhoneIncoming,
+} from "lucide-react";
 import clsx from "clsx";
 
 export default function RoomInterface({ mode = "room" }) {
@@ -20,11 +30,21 @@ export default function RoomInterface({ mode = "room" }) {
 		handleRespondToRoomInvite,
 		handleSendRoomMessage,
 		handleInviteUsersToRoom,
+		roomCallSession,
+		roomCallIncomingByRoom,
+		roomCallParticipantsByRoom,
+		roomCallLastJoinedByRoom,
+		handleStartRoomCall,
+		handleJoinRoomCall,
 		setCurrentView,
 	} = useApp();
 
 	const [draftMessage, setDraftMessage] = useState("");
 	const [ownerInviteSelection, setOwnerInviteSelection] = useState([]);
+	const otherMembersCount = Math.max(
+		(selectedRoom?.members?.length || 1) - 1,
+		0,
+	);
 
 	const formatTime = (timestamp) => {
 		try {
@@ -82,6 +102,32 @@ export default function RoomInterface({ mode = "room" }) {
 		}
 		handleSendRoomMessage(selectedRoomId, draftMessage.trim());
 		setDraftMessage("");
+	};
+
+	const getRoomMessageStatusMeta = (message) => {
+		const deliveredBy = Array.isArray(message.deliveredBy)
+			? message.deliveredBy
+			: [];
+		const readBy = Array.isArray(message.readBy) ? message.readBy : [];
+
+		const deliveredCount = new Set(
+			deliveredBy.filter((participant) => participant !== message.from),
+		).size;
+		const readCount = new Set(
+			readBy.filter((participant) => participant !== message.from),
+		).size;
+
+		const allDelivered =
+			otherMembersCount > 0 && deliveredCount >= otherMembersCount;
+		const allRead = otherMembersCount > 0 && readCount >= otherMembersCount;
+
+		return {
+			deliveredCount,
+			readCount,
+			allDelivered,
+			allRead,
+			hasPeers: otherMembersCount > 0,
+		};
 	};
 
 	if (mode === "create") {
@@ -187,6 +233,23 @@ export default function RoomInterface({ mode = "room" }) {
 
 	const isMember = selectedRoom.isMember;
 	const hasInvite = selectedRoom.isInvited || Boolean(roomInviteForSelected);
+	const isRoomCallActive = roomCallSession?.roomId === selectedRoom.roomId;
+	const callParticipantsForRoom =
+		roomCallParticipantsByRoom?.[selectedRoom.roomId] || [];
+	const hasActiveRoomCall = callParticipantsForRoom.length > 0;
+	const hasJoinedBefore = Boolean(
+		roomCallLastJoinedByRoom?.[selectedRoom.roomId],
+	);
+	const incomingRoomCallBy = roomCallIncomingByRoom[selectedRoom.roomId];
+	const showJoinAction = incomingRoomCallBy || hasActiveRoomCall;
+	const primaryCallLabel = isRoomCallActive
+		? "Open Call"
+		: showJoinAction
+			? hasJoinedBefore
+				? "Rejoin Call"
+				: "Join Call"
+			: "Start Call";
+	const PrimaryCallIcon = showJoinAction ? PhoneIncoming : Phone;
 
 	return (
 		<div className="flex-1 flex flex-col bg-black text-white">
@@ -207,7 +270,46 @@ export default function RoomInterface({ mode = "room" }) {
 							: `Owner: ${selectedRoom.owner}`}
 					</p>
 				</div>
+				{isMember && (
+					<div className="ml-3">
+						{isRoomCallActive ? (
+							<button
+								onClick={() => setCurrentView("room-call")}
+								className="h-9 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-medium">
+								{primaryCallLabel}
+							</button>
+						) : showJoinAction ? (
+							<button
+								onClick={() => handleJoinRoomCall(selectedRoom.roomId)}
+								className="h-9 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium flex items-center gap-1.5 relative overflow-hidden animate-pulse">
+								<PrimaryCallIcon className="w-3.5 h-3.5" />
+								{primaryCallLabel}
+							</button>
+						) : (
+							<button
+								onClick={() => handleStartRoomCall(selectedRoom.roomId)}
+								className="h-9 px-3 rounded-lg bg-cyan-600/25 hover:bg-cyan-600/35 text-cyan-100 text-xs font-medium flex items-center gap-1.5">
+								<Phone className="w-3.5 h-3.5" />
+								{primaryCallLabel}
+							</button>
+						)}
+					</div>
+				)}
 			</div>
+
+			{isMember && incomingRoomCallBy && !isRoomCallActive && (
+				<div className="px-4 py-2 border-b border-emerald-500/20 bg-emerald-500/10 flex items-center justify-between gap-2 relative overflow-hidden">
+					<span className="absolute inset-0 bg-emerald-400/10 animate-pulse" />
+					<p className="text-xs text-emerald-100 truncate">
+						{incomingRoomCallBy} is calling this room
+					</p>
+					<button
+						onClick={() => handleJoinRoomCall(selectedRoom.roomId)}
+						className="h-7 px-2.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-[11px] font-medium animate-bounce">
+						Join
+					</button>
+				</div>
+			)}
 
 			{!isMember ? (
 				<div className="flex-1 p-4 space-y-3">
@@ -249,40 +351,53 @@ export default function RoomInterface({ mode = "room" }) {
 								No room messages yet.
 							</div>
 						) : (
-							selectedRoomMessages.map((item, index) => (
-								<div
-									key={item.messageId || `${item.timestamp}-${index}`}
-									className={clsx(
-										"max-w-[80%] px-3 py-2 rounded-2xl border",
-										item.isMe
-											? "ml-auto bg-cyan-600/80 border-cyan-400/25"
-											: "mr-auto bg-white/10 border-white/10",
-									)}>
-									<p className="text-[11px] text-white/70 mb-1 flex items-center gap-1.5">
-										{item.from}
-										<span className="opacity-70">
-											{formatTime(item.timestamp)}
-										</span>
-									</p>
-									<p className="text-sm whitespace-pre-wrap break-words">
-										{item.message}
-									</p>
-									{item.isMe && (
-										<div className="mt-1 text-[11px] text-white/70 flex items-center justify-end gap-1">
-											{item.status === "sent" ? (
-												<Check className="w-3.5 h-3.5" />
-											) : (
-												<Clock className="w-3.5 h-3.5" />
-											)}
-											<span>
-												{item.status === "sent"
-													? "Sent"
-													: "Sending"}
+							selectedRoomMessages.map((item, index) => {
+								const statusMeta = getRoomMessageStatusMeta(item);
+
+								return (
+									<div
+										key={
+											item.messageId || `${item.timestamp}-${index}`
+										}
+										className={clsx(
+											"max-w-[82%] px-3 py-2.5 rounded-2xl border shadow-sm",
+											item.isMe
+												? "ml-auto bg-cyan-600/80 border-cyan-400/25"
+												: "mr-auto bg-white/10 border-white/10",
+										)}>
+										<p className="text-[11px] text-white/70 mb-1 flex items-center gap-1.5">
+											{item.from}
+											<span className="opacity-70">
+												{formatTime(item.timestamp)}
 											</span>
-										</div>
-									)}
-								</div>
-							))
+										</p>
+										<p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+											{item.message}
+										</p>
+
+										{item.isMe && (
+											<div className="mt-1.5 text-[11px] text-white/70 flex items-center justify-end gap-1.5">
+												{item.status === "pending" ? (
+													<Clock className="w-3.5 h-3.5" />
+												) : statusMeta.allRead ? (
+													<CheckCheck className="w-3.5 h-3.5 text-sky-300" />
+												) : statusMeta.allDelivered ? (
+													<CheckCheck className="w-3.5 h-3.5" />
+												) : (
+													<Check className="w-3.5 h-3.5" />
+												)}
+												<span>
+													{item.status === "pending"
+														? "Sending"
+														: statusMeta.hasPeers
+															? `${statusMeta.readCount}/${otherMembersCount} read`
+															: "Sent"}
+												</span>
+											</div>
+										)}
+									</div>
+								);
+							})
 						)}
 
 						{selectedRoom.isOwner && (

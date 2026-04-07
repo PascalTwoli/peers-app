@@ -201,6 +201,81 @@ export function validateIncomingMessage(data) {
 		return { valid: true };
 	}
 
+	if (data.type === "room_message_status") {
+		if (!isNonEmptyString(data.roomId) || !isNonEmptyString(data.messageId)) {
+			return {
+				valid: false,
+				message: "roomId and messageId are required",
+			};
+		}
+
+		if (data.status !== "delivered" && data.status !== "read") {
+			return {
+				valid: false,
+				message: "status must be delivered or read",
+			};
+		}
+	}
+
+	if (
+		data.type === "room_call_start" ||
+		data.type === "room_call_join" ||
+		data.type === "room_call_leave" ||
+		data.type === "room_call_end"
+	) {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
+		}
+		return { valid: true };
+	}
+
+	if (
+		data.type === "room_webrtc_offer" ||
+		data.type === "room_webrtc_answer" ||
+		data.type === "room_webrtc_ice"
+	) {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
+		}
+
+		if (!isNonEmptyString(data.to)) {
+			return { valid: false, message: "Missing or invalid target user" };
+		}
+
+		if (data.type === "room_webrtc_offer" && !data.offer) {
+			return { valid: false, message: "offer is required" };
+		}
+
+		if (data.type === "room_webrtc_answer" && !data.answer) {
+			return { valid: false, message: "answer is required" };
+		}
+
+		if (data.type === "room_webrtc_ice" && !data.ice) {
+			return { valid: false, message: "ice is required" };
+		}
+
+		return { valid: true };
+	}
+
+	if (data.type === "room_media_state") {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
+		}
+
+		if (
+			typeof data.isMuted !== "boolean" ||
+			typeof data.isVideoOff !== "boolean" ||
+			typeof data.isScreenSharing !== "boolean"
+		) {
+			return {
+				valid: false,
+				message: "isMuted, isVideoOff and isScreenSharing must be booleans",
+			};
+		}
+
+		return { valid: true };
+	}
+
 	if (!isNonEmptyString(data.to)) {
 		return { valid: false, message: "Missing or invalid target user" };
 	}
@@ -303,6 +378,12 @@ export function validateIncomingMessage(data) {
 
 		if (!isNonEmptyString(data.emoji) || data.emoji.length > 8) {
 			return { valid: false, message: "Invalid emoji" };
+		}
+	}
+
+	if (data.type === "video_upgrade_response") {
+		if (typeof data.accepted !== "boolean") {
+			return { valid: false, message: "accepted must be boolean" };
 		}
 	}
 

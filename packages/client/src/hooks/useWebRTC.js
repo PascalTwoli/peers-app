@@ -587,65 +587,71 @@ export function useWebRTC({
 		}
 	}, [localStream]);
 
-	const toggleVideo = useCallback(
-		async (onVideoAdded) => {
-			if (localStream) {
-				const videoTrack = localStream.getVideoTracks()[0];
+	const toggleVideo = useCallback(async () => {
+		if (localStream) {
+			const videoTrack = localStream.getVideoTracks()[0];
 
-				if (videoTrack) {
-					// Has video track - just toggle it on/off
-					videoTrack.enabled = !videoTrack.enabled;
-					setIsVideoOff(!videoTrack.enabled);
+			if (videoTrack) {
+				// Has video track - just toggle it on/off
+				videoTrack.enabled = !videoTrack.enabled;
+				setIsVideoOff(!videoTrack.enabled);
 
-					// Notify remote peer about video state change
-					if (targetPeer) {
+				// Notify remote peer about video state change
+				if (targetPeer) {
+					sendMessage({
+						type: "video-toggle",
+						to: targetPeer,
+						enabled: videoTrack.enabled,
+					});
+				}
+			}
+		}
+	}, [localStream, sendMessage, targetPeer]);
+
+	const upgradeToVideo = useCallback(
+		async (peerUser) => {
+			if (!localStream) {
+				return;
+			}
+
+			const existingVideoTrack = localStream.getVideoTracks()[0];
+			if (existingVideoTrack) {
+				existingVideoTrack.enabled = true;
+				setIsVideoOff(false);
+				return;
+			}
+
+			try {
+				const videoStream = await navigator.mediaDevices.getUserMedia({
+					video: { facingMode: "user" },
+				});
+				const newVideoTrack = videoStream.getVideoTracks()[0];
+
+				localStream.addTrack(newVideoTrack);
+
+				const pc = peerConnectionRef.current;
+				if (pc) {
+					pc.addTrack(newVideoTrack, localStream);
+
+					const offer = await pc.createOffer();
+					await pc.setLocalDescription(offer);
+
+					const upgradePeer = peerUser || targetPeer;
+					if (upgradePeer) {
 						sendMessage({
-							type: "video-toggle",
-							to: targetPeer,
-							enabled: videoTrack.enabled,
+							type: "offer",
+							to: upgradePeer,
+							offer,
+							callType: "video",
+							isUpgrade: true,
 						});
 					}
-				} else {
-					// No video track (audio-only call) - need to add video and renegotiate
-					try {
-						const videoStream = await navigator.mediaDevices.getUserMedia(
-							{
-								video: { facingMode: "user" },
-							},
-						);
-						const newVideoTrack = videoStream.getVideoTracks()[0];
-
-						// Add to local stream
-						localStream.addTrack(newVideoTrack);
-
-						// Add to peer connection
-						const pc = peerConnectionRef.current;
-						if (pc) {
-							pc.addTrack(newVideoTrack, localStream);
-
-							// Renegotiate - create new offer for video upgrade
-							const offer = await pc.createOffer();
-							await pc.setLocalDescription(offer);
-
-							if (targetPeer) {
-								sendMessage({
-									type: "offer",
-									to: targetPeer,
-									offer: offer,
-									callType: "video",
-									isUpgrade: true, // Flag to indicate this is an upgrade, not a new call
-								});
-							}
-						}
-
-						setIsVideoOff(false);
-
-						// Callback to update call type in parent
-						onVideoAdded?.();
-					} catch (error) {
-						console.error("Failed to add video:", error);
-					}
 				}
+
+				setIsVideoOff(false);
+			} catch (error) {
+				console.error("Failed to upgrade call to video:", error);
+				throw error;
 			}
 		},
 		[localStream, sendMessage, targetPeer],
@@ -667,5 +673,6 @@ export function useWebRTC({
 		flipCamera,
 		handleAnswer,
 		handleIceCandidate,
+		upgradeToVideo,
 	};
 }

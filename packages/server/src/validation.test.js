@@ -64,6 +64,121 @@ test("validateIncomingMessage rejects oversized file payload", () => {
 	assert.equal(result.valid, false);
 });
 
+test("validateIncomingMessage accepts video upgrade request payload", () => {
+	const result = validateIncomingMessage({
+		type: "video_upgrade_request",
+		to: "bob",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid video upgrade response", () => {
+	const result = validateIncomingMessage({
+		type: "video_upgrade_response",
+		to: "bob",
+		accepted: "yes",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts valid room message status", () => {
+	const result = validateIncomingMessage({
+		type: "room_message_status",
+		to: "alice",
+		roomId: "room-1",
+		messageId: "room-msg-1",
+		status: "read",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room message status", () => {
+	const result = validateIncomingMessage({
+		type: "room_message_status",
+		to: "alice",
+		roomId: "room-1",
+		messageId: "room-msg-1",
+		status: "opened",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts room_call_start payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_call_start",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects room call payload without roomId", () => {
+	const result = validateIncomingMessage({
+		type: "room_call_join",
+		roomId: "",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts room_call_end payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_call_end",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage accepts room_webrtc_offer payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_webrtc_offer",
+		to: "bob",
+		roomId: "room-1",
+		offer: { type: "offer", sdp: "v=0" },
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects room_webrtc_ice without candidate", () => {
+	const result = validateIncomingMessage({
+		type: "room_webrtc_ice",
+		to: "bob",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts room_media_state payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_media_state",
+		roomId: "room-1",
+		isMuted: false,
+		isVideoOff: true,
+		isScreenSharing: false,
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room_media_state payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_media_state",
+		roomId: "room-1",
+		isMuted: "no",
+		isVideoOff: true,
+		isScreenSharing: false,
+	});
+
+	assert.equal(result.valid, false);
+});
+
 test("isTrustedLocalOrigin accepts private network origins", () => {
 	assert.equal(isTrustedLocalOrigin("https://172.20.10.3:4430"), true);
 	assert.equal(isTrustedLocalOrigin("https://192.168.1.10:4430"), true);

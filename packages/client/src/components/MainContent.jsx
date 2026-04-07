@@ -4,12 +4,21 @@ import PlaceholderView from "./PlaceholderView";
 import ChatInterface from "./ChatInterface";
 import VideoInterface from "./VideoInterface";
 import RoomInterface from "./RoomInterface";
+import RoomCallInterface from "./RoomCallInterface";
+import InviteCenterView from "./InviteCenterView";
 import IncomingCallModal from "./IncomingCallModal";
 import CallingOverlay from "./CallingOverlay";
+import VideoUpgradeRequestModal from "./VideoUpgradeRequestModal";
 
 export default function MainContent() {
-	const { currentView, incomingCall, isCalling, remoteStream, isCallActive } =
-		useApp();
+	const {
+		currentView,
+		incomingCall,
+		incomingVideoUpgradeRequest,
+		isCalling,
+		remoteStream,
+		isCallActive,
+	} = useApp();
 	const audioRef = useRef(null);
 
 	// Keep remote audio playing even when VideoInterface is not mounted
@@ -52,10 +61,13 @@ export default function MainContent() {
 			{currentView === "chat" && <ChatInterface />}
 			{currentView === "video" && <VideoInterface />}
 			{currentView === "room" && <RoomInterface mode="room" />}
+			{currentView === "room-call" && <RoomCallInterface />}
 			{currentView === "room-create" && <RoomInterface mode="create" />}
+			{currentView === "invite" && <InviteCenterView />}
 
 			{/* Modals and Overlays */}
 			{incomingCall && <IncomingCallModal />}
+			{incomingVideoUpgradeRequest && <VideoUpgradeRequestModal />}
 			{isCalling && <CallingOverlay />}
 		</main>
 	);

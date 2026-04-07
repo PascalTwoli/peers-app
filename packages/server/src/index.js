@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
+import os from "os";
 import cors from "cors";
 import { connectDB, isDBConnected } from "./db/connect.js";
 import Message from "./db/models/Message.js";
@@ -163,10 +164,13 @@ const registeredUsers = new Set();
 const messageQueue = new Map();
 const socketSessions = new Map();
 const socketIps = new Map();
+const socketInviteOrigins = new Map();
 const connectionCountByIp = new Map();
 const rateLimitStore = new Map();
 const inviteLinks = new Map();
 const rooms = new Map();
+const roomCalls = new Map();
+const roomCallStarters = new Map();
 
 const RATE_LIMITS = {
 	join: { max: 20, windowMs: 60_000 },
@@ -181,6 +185,14 @@ const RATE_LIMITS = {
 	room_invite_users: { max: 80, windowMs: 60_000 },
 	room_invite_response: { max: 80, windowMs: 60_000 },
 	room_chat: { max: 200, windowMs: 60_000 },
+	room_call_start: { max: 30, windowMs: 60_000 },
+	room_call_join: { max: 60, windowMs: 60_000 },
+	room_call_leave: { max: 80, windowMs: 60_000 },
+	room_call_end: { max: 30, windowMs: 60_000 },
+	room_media_state: { max: 600, windowMs: 60_000 },
+	room_webrtc_offer: { max: 400, windowMs: 60_000 },
+	room_webrtc_answer: { max: 400, windowMs: 60_000 },
+	room_webrtc_ice: { max: 1200, windowMs: 60_000 },
 	create_invite: { max: 50, windowMs: 60_000 },
 	invite_join: { max: 50, windowMs: 60_000 },
 };
@@ -288,7 +300,10 @@ async function findInviteByCode(code) {
 	}
 
 	try {
-		return await Invite.findOne({ code, expiresAt: { $gt: new Date() } }).lean();
+		return await Invite.findOne({
+			code,
+			expiresAt: { $gt: new Date() },
+		}).lean();
 	} catch (error) {
 		console.error("Failed to lookup invite:", error);
 		return null;
@@ -434,8 +449,105 @@ function broadcastRoomLists() {
 	}
 }
 
-function windowLocationForInvite() {
-	return `${protocol}://localhost:${PORT}`;
+function broadcastRoomCallParticipants(roomId) {
+	const room = rooms.get(roomId);
+	const participants = Array.from(roomCalls.get(roomId) || []);
+	if (!room) {
+		return;
+	}
+
+	for (const member of room.members) {
+		const memberSocket = getSocketByUsername(member);
+		if (memberSocket && memberSocket.readyState === memberSocket.OPEN) {
+			memberSocket.send(
+				JSON.stringify({
+					type: "room_call_participants",
+					roomId,
+					participants,
+				}),
+			);
+		}
+	}
+}
+
+function endRoomCall(roomId) {
+	const room = rooms.get(roomId);
+	if (!room) {
+		roomCalls.delete(roomId);
+		roomCallStarters.delete(roomId);
+		return;
+	}
+
+	roomCalls.delete(roomId);
+	roomCallStarters.delete(roomId);
+	for (const member of room.members) {
+		const memberSocket = getSocketByUsername(member);
+		if (memberSocket && memberSocket.readyState === memberSocket.OPEN) {
+			memberSocket.send(
+				JSON.stringify({
+					type: "room_call_ended",
+					roomId,
+				}),
+			);
+		}
+	}
+}
+
+function getLocalNetworkHost() {
+	const interfaces = os.networkInterfaces();
+	for (const detailsList of Object.values(interfaces)) {
+		for (const details of detailsList || []) {
+			if (details.family === "IPv4" && !details.internal) {
+				return details.address;
+			}
+		}
+	}
+
+	return "localhost";
+}
+
+function isLoopbackHost(hostname) {
+	return (
+		hostname === "localhost" ||
+		hostname === "127.0.0.1" ||
+		hostname === "::1" ||
+		hostname === "0.0.0.0" ||
+		hostname === "::"
+	);
+}
+
+function getInviteOriginFromRequest(req) {
+	const hostHeader = req?.headers?.host;
+	if (!hostHeader) {
+		return null;
+	}
+
+	try {
+		const parsed = new URL(`${protocol}://${hostHeader}`);
+		const port = parsed.port || String(PORT);
+		if (isLoopbackHost(parsed.hostname)) {
+			return `${protocol}://${getLocalNetworkHost()}:${port}`;
+		}
+
+		return `${protocol}://${parsed.host}`;
+	} catch {
+		return null;
+	}
+}
+
+function windowLocationForInvite(ws) {
+	if (process.env.INVITE_BASE_URL) {
+		return process.env.INVITE_BASE_URL;
+	}
+
+	if (ws && socketInviteOrigins.has(ws)) {
+		return socketInviteOrigins.get(ws);
+	}
+
+	const host =
+		HOST === "0.0.0.0" || HOST === "::" ? getLocalNetworkHost() : HOST;
+
+	return `${protocol}://${host}:${PORT}`;
 }
 
 function getClientIp(req) {
@@ -588,6 +700,10 @@ wss.on("connection", (ws, req) => {
 
 	socketIps.set(ws, clientIp);
 	socketSessions.set(ws, randomUUID());
+	const inviteOrigin = getInviteOriginFromRequest(req);
+	if (inviteOrigin) {
+		socketInviteOrigins.set(ws, inviteOrigin);
+	}
 
 	console.log("🟢 New WebSocket Client Connected");
 	console.log(`Total clients: ${wss.clients.size}`);
@@ -640,6 +756,8 @@ wss.on("connection", (ws, req) => {
 				case "hangup":
 				case "typing":
 				case "video-toggle":
+				case "video_upgrade_request":
+				case "video_upgrade_response":
 				case "delivered":
 				case "read":
 				case "delete-message":
@@ -678,7 +796,7 @@ wss.on("connection", (ws, req) => {
 						JSON.stringify({
 							type: "invite_created",
 							code,
-							link: `${windowLocationForInvite()}/join/${code}`,
+							link: `${windowLocationForInvite(ws)}/join/${code}`,
 						}),
 					);
 					break;
@@ -693,7 +811,8 @@ wss.on("connection", (ws, req) => {
 							invite = {
 								owner: dbInvite.createdBy,
 								createdAt:
-									new Date(dbInvite.expiresAt).getTime() - INVITE_TTL_MS,
+									new Date(dbInvite.expiresAt).getTime() -
+									INVITE_TTL_MS,
 								expiresAt: new Date(dbInvite.expiresAt).getTime(),
 								targetRoom: dbInvite.targetRoom || null,
 							};
@@ -905,6 +1024,174 @@ wss.on("connection", (ws, req) => {
 					break;
 				}
 
+				case "room_call_start": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+
+					if (!roomCalls.has(data.roomId)) {
+						roomCalls.set(data.roomId, new Set([from]));
+						roomCallStarters.set(data.roomId, from);
+					}
+
+					for (const member of room.members) {
+						if (member === from) {
+							continue;
+						}
+						const memberSocket = getSocketByUsername(member);
+						if (
+							memberSocket &&
+							memberSocket.readyState === memberSocket.OPEN
+						) {
+							memberSocket.send(
+								JSON.stringify({
+									type: "room_call_started",
+									roomId: data.roomId,
+									startedBy: from,
+									timestamp: Date.now(),
+								}),
+							);
+						}
+					}
+
+					broadcastRoomCallParticipants(data.roomId);
+					break;
+				}
+
+				case "room_call_end": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					const participants = roomCalls.get(data.roomId);
+					const starter = roomCallStarters.get(data.roomId);
+
+					if (!from || !room || !participants) break;
+
+					const isOwner = room.owner === from;
+					const isStarter = starter === from;
+					if (!isOwner && !isStarter) {
+						break;
+					}
+
+					endRoomCall(data.roomId);
+					break;
+				}
+
+				case "room_call_join": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+					if (!roomCalls.has(data.roomId)) {
+						roomCalls.set(data.roomId, new Set());
+					}
+
+					roomCalls.get(data.roomId).add(from);
+					broadcastRoomCallParticipants(data.roomId);
+					break;
+				}
+
+				case "room_call_leave": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					const participants = roomCalls.get(data.roomId);
+					if (!from || !room || !participants) break;
+
+					participants.delete(from);
+					if (participants.size === 0) {
+						endRoomCall(data.roomId);
+					} else {
+						broadcastRoomCallParticipants(data.roomId);
+					}
+					break;
+				}
+
+				case "room_media_state": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					const participants = roomCalls.get(data.roomId);
+					if (!from || !room || !participants || !participants.has(from)) {
+						break;
+					}
+
+					const payload = {
+						type: "room_media_state",
+						roomId: data.roomId,
+						from,
+						isMuted: data.isMuted,
+						isVideoOff: data.isVideoOff,
+						isScreenSharing: data.isScreenSharing,
+						timestamp: Date.now(),
+					};
+
+					for (const participant of participants) {
+						if (participant === from) {
+							continue;
+						}
+						const targetSocket = getSocketByUsername(participant);
+						if (
+							targetSocket &&
+							targetSocket.readyState === targetSocket.OPEN
+						) {
+							targetSocket.send(JSON.stringify(payload));
+						}
+					}
+
+					break;
+				}
+
+				case "room_webrtc_offer":
+				case "room_webrtc_answer":
+				case "room_webrtc_ice": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+					if (!room.members.has(data.to)) break;
+
+					const targetSocket = getSocketByUsername(data.to);
+					if (
+						!targetSocket ||
+						targetSocket.readyState !== targetSocket.OPEN
+					) {
+						break;
+					}
+
+					targetSocket.send(
+						JSON.stringify({
+							type: data.type,
+							roomId: data.roomId,
+							from,
+							offer: data.offer,
+							answer: data.answer,
+							ice: data.ice,
+						}),
+					);
+					break;
+				}
+
+				case "room_message_status": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+					if (!room.members.has(data.to)) break;
+
+					const payload = {
+						type: "room_message_status",
+						roomId: data.roomId,
+						messageId: data.messageId,
+						status: data.status,
+						from,
+						timestamp: Date.now(),
+					};
+
+					const targetSocket = getSocketByUsername(data.to);
+					if (
+						targetSocket &&
+						targetSocket.readyState === targetSocket.OPEN
+					) {
+						targetSocket.send(JSON.stringify(payload));
+					}
+					break;
+				}
+
 				default:
 					console.log("Unknown message type:", data.type);
 					break;
@@ -926,6 +1213,20 @@ wss.on("connection", (ws, req) => {
 		activeConnections.delete(ws);
 		socketSessions.delete(ws);
 		socketIps.delete(ws);
+		socketInviteOrigins.delete(ws);
+
+		for (const [roomId, participants] of roomCalls.entries()) {
+			if (!participants.has(user_name)) {
+				continue;
+			}
+
+			participants.delete(user_name);
+			if (participants.size === 0) {
+				endRoomCall(roomId);
+			} else {
+				broadcastRoomCallParticipants(roomId);
+			}
+		}
 		if (ip) {
 			decrementConnectionCount(ip);
 		}
@@ -1000,6 +1301,7 @@ function buildPayload(data, ws) {
 				offer: data.offer,
 				from,
 				callType: data.callType,
+				isUpgrade: Boolean(data.isUpgrade),
 			};
 		case "answer":
 			return { type: "answer", answer: data.answer, from };
@@ -1017,6 +1319,14 @@ function buildPayload(data, ws) {
 			};
 		case "video-toggle":
 			return { type: "video-toggle", enabled: data.enabled, from };
+		case "video_upgrade_request":
+			return { type: "video_upgrade_request", from };
+		case "video_upgrade_response":
+			return {
+				type: "video_upgrade_response",
+				accepted: Boolean(data.accepted),
+				from,
+			};
 		case "file-message":
 			return {
 				type: "file-message",
