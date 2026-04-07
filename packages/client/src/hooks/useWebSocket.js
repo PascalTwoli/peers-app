@@ -17,7 +17,6 @@ export function useWebSocket({
 	onRead,
 	onMessageQueued,
 	onVideoToggle,
-	onFileChunk,
 	onEditMessage,
 	onReaction,
 	onInviteCreated,
@@ -64,7 +63,6 @@ export function useWebSocket({
 		onRead,
 		onMessageQueued,
 		onVideoToggle,
-		onFileChunk,
 		onEditMessage,
 		onReaction,
 		onInviteCreated,
@@ -105,7 +103,6 @@ export function useWebSocket({
 			onRead,
 			onMessageQueued,
 			onVideoToggle,
-			onFileChunk,
 			onEditMessage,
 			onReaction,
 			onInviteCreated,
@@ -292,24 +289,20 @@ export function useWebSocket({
 							cb.onVideoToggle?.(data);
 							break;
 
-						case "file-message":
+						case "file":
 							cb.onMessage?.({
 								type: "file",
 								fileName: data.fileName,
 								fileType: data.fileType,
 								fileKind: data.fileKind || "file",
 								fileSize: data.fileSize,
-								fileData: data.fileData,
+								fileUrl: data.fileUrl,
 								caption: data.caption || "",
 								from: data.from,
 								messageId: data.messageId,
 								timestamp: data.timestamp,
 								isMe: false,
 							});
-							break;
-
-						case "file_chunk":
-							cb.onFileChunk?.(data);
 							break;
 
 						case "edit_message":

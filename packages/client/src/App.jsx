@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import LoginScreen from "./components/LoginScreen";
 import Sidebar from "./components/Sidebar";
 import MainContent from "./components/MainContent";
@@ -22,7 +23,6 @@ import {
 import {
 	createMessageId,
 	createCallLog,
-	createFileMessage,
 	createTextMessage,
 } from "./utils/messageFactory";
 
@@ -48,6 +48,105 @@ function dedupeRoomsById(rooms) {
 
 function createRoomMessagesStorageKey(username) {
 	return `${ROOM_MESSAGES_STORAGE_KEY_PREFIX}:${username}`;
+}
+
+function encodePathSegment(value) {
+	return encodeURIComponent(String(value || "").trim());
+}
+
+function decodePathSegment(value) {
+	try {
+		return decodeURIComponent(value || "");
+	} catch {
+		return value || "";
+	}
+}
+
+function getWorkspacePath({
+	currentView,
+	selectedUser,
+	selectedRoomId,
+	callPeer,
+}) {
+	if (currentView === "chat" && selectedUser) {
+		return `/app/chat/${encodePathSegment(selectedUser)}`;
+	}
+
+	if (currentView === "video" && (callPeer || selectedUser)) {
+		return `/app/call/${encodePathSegment(callPeer || selectedUser)}`;
+	}
+
+	if (currentView === "invite") {
+		return "/app/invites";
+	}
+
+	if (currentView === "room-create") {
+		return "/app/rooms/new";
+	}
+
+	if (currentView === "room" && selectedRoomId) {
+		return `/app/rooms/${encodePathSegment(selectedRoomId)}`;
+	}
+
+	if (currentView === "room-call" && selectedRoomId) {
+		return `/app/rooms/${encodePathSegment(selectedRoomId)}/call`;
+	}
+
+	return "/app";
+}
+
+function parseWorkspacePath(pathname) {
+	if (!pathname.startsWith("/app")) {
+		return { type: "external" };
+	}
+
+	const relative = pathname.replace(/^\/app/, "") || "/";
+
+	if (relative === "/" || relative === "") {
+		return { type: "placeholder" };
+	}
+
+	if (relative === "/invites") {
+		return { type: "invite" };
+	}
+
+	if (relative === "/rooms/new") {
+		return { type: "room-create" };
+	}
+
+	const roomCallMatch = relative.match(/^\/rooms\/([^/]+)\/call$/);
+	if (roomCallMatch?.[1]) {
+		return {
+			type: "room-call",
+			roomId: decodePathSegment(roomCallMatch[1]),
+		};
+	}
+
+	const roomMatch = relative.match(/^\/rooms\/([^/]+)$/);
+	if (roomMatch?.[1]) {
+		return {
+			type: "room",
+			roomId: decodePathSegment(roomMatch[1]),
+		};
+	}
+
+	const chatMatch = relative.match(/^\/chat\/([^/]+)$/);
+	if (chatMatch?.[1]) {
+		return {
+			type: "chat",
+			user: decodePathSegment(chatMatch[1]),
+		};
+	}
+
+	const callMatch = relative.match(/^\/call\/([^/]+)$/);
+	if (callMatch?.[1]) {
+		return {
+			type: "video",
+			user: decodePathSegment(callMatch[1]),
+		};
+	}
+
+	return { type: "placeholder" };
 }
 
 function loadPersistedRoomMessages(username) {
@@ -84,6 +183,10 @@ function persistRoomMessages(username, roomMessages) {
 }
 
 function App() {
+	const location = useLocation();
+	const navigate = useNavigate();
+	const isApplyingRouteRef = useRef(false);
+
 	const STATUS_PRIORITY = {
 		failed: -1,
 		pending: 0,
@@ -244,11 +347,11 @@ function App() {
 	}, [username, roomMessages]);
 
 	useEffect(() => {
-		const match = window.location.pathname.match(/^\/join\/([a-zA-Z0-9]+)/);
+		const match = location.pathname.match(/^\/join\/([a-zA-Z0-9]+)/);
 		if (match?.[1]) {
 			setPendingInviteCode(match[1]);
 		}
-	}, []);
+	}, [location.pathname]);
 
 	const showToast = useCallback((message, type = "info") => {
 		const id = Date.now();
@@ -292,9 +395,6 @@ function App() {
 	const callPeerRef = useRef(null);
 	const callTimeoutRef = useRef(null);
 	const callStartTimeRef = useRef(null);
-	const incomingChunkBufferRef = useRef(new Map());
-
-	const CHUNK_SIZE = 64 * 1024;
 
 	const selectedRoom =
 		rooms.find((room) => room.roomId === selectedRoomId) || null;
@@ -337,6 +437,99 @@ function App() {
 	useEffect(() => {
 		selectedRoomIdRef.current = selectedRoomId;
 	}, [selectedRoomId]);
+
+	useEffect(() => {
+		if (!isLoggedIn) {
+			return;
+		}
+
+		const parsed = parseWorkspacePath(location.pathname);
+		if (parsed.type === "external") {
+			return;
+		}
+
+		isApplyingRouteRef.current = true;
+
+		if (parsed.type === "chat") {
+			setSelectedRoomId(null);
+			if (parsed.user) {
+				setSelectedUser(parsed.user);
+				setCurrentView("chat");
+			} else {
+				setCurrentView("placeholder");
+			}
+		} else if (parsed.type === "video") {
+			setSelectedRoomId(null);
+			if (parsed.user) {
+				setSelectedUser(parsed.user);
+			}
+			setCurrentView("video");
+		} else if (parsed.type === "room") {
+			setSelectedUser(null);
+			if (parsed.roomId) {
+				setSelectedRoomId(parsed.roomId);
+				setCurrentView("room");
+			}
+		} else if (parsed.type === "room-call") {
+			setSelectedUser(null);
+			if (parsed.roomId) {
+				setSelectedRoomId(parsed.roomId);
+				const joinedSameRoom =
+					roomCallSession?.joined &&
+					roomCallSession?.roomId === parsed.roomId;
+				setCurrentView(joinedSameRoom ? "room-call" : "room");
+			}
+		} else if (parsed.type === "invite") {
+			setCurrentView("invite");
+		} else if (parsed.type === "room-create") {
+			setSelectedUser(null);
+			setCurrentView("room-create");
+		} else {
+			setCurrentView("placeholder");
+		}
+
+		queueMicrotask(() => {
+			isApplyingRouteRef.current = false;
+		});
+	}, [
+		isLoggedIn,
+		location.pathname,
+		roomCallSession?.joined,
+		roomCallSession?.roomId,
+	]);
+
+	useEffect(() => {
+		if (!isLoggedIn || isApplyingRouteRef.current) {
+			return;
+		}
+
+		if (!location.pathname.startsWith("/app")) {
+			return;
+		}
+
+		const nextPath = getWorkspacePath({
+			currentView,
+			selectedUser,
+			selectedRoomId:
+				currentView === "room-call"
+					? roomCallSession?.roomId || selectedRoomId
+					: selectedRoomId,
+			callPeer,
+		});
+
+		if (nextPath !== location.pathname) {
+			navigate(nextPath, { replace: true });
+		}
+	}, [
+		isLoggedIn,
+		currentView,
+		selectedUser,
+		selectedRoomId,
+		roomCallSession?.roomId,
+		callPeer,
+		location.pathname,
+		navigate,
+	]);
 
 	useEffect(() => {
 		isCallActiveRef.current = isCallActive;
@@ -390,12 +583,13 @@ function App() {
 					console.error("Failed to save message:", err),
 				);
 				// Auto-save file messages to saved files
-				if (msg.type === "file" && msg.fileData) {
+				if (msg.type === "file" && (msg.fileUrl || msg.fileData)) {
 					saveFile({
 						fileName: msg.fileName,
 						fileType: msg.fileType,
 						fileSize: msg.fileSize,
-						fileData: msg.fileData,
+						fileData: msg.fileData || null,
+						fileUrl: msg.fileUrl || null,
 						from: msg.from,
 						ownerUsername: username,
 						peerUsername: msg.from,
@@ -447,114 +641,6 @@ function App() {
 							});
 						}, 100);
 					}
-				}
-			}
-		},
-		onFileChunk: (data) => {
-			if (!data?.from || !data?.messageId) {
-				return;
-			}
-
-			const key = `${data.from}:${data.messageId}`;
-			let buffer = incomingChunkBufferRef.current.get(key);
-			if (!buffer) {
-				buffer = {
-					messageId: data.messageId,
-					fileName: data.fileName,
-					fileType: data.fileType,
-					fileKind: data.fileKind || "file",
-					caption: data.caption || "",
-					timestamp: data.timestamp || Date.now(),
-					totalChunks: data.totalChunks,
-					chunks: new Array(data.totalChunks),
-				};
-				incomingChunkBufferRef.current.set(key, buffer);
-			}
-
-			if (
-				!Number.isInteger(data.chunkIndex) ||
-				data.chunkIndex < 0 ||
-				data.chunkIndex >= buffer.totalChunks
-			) {
-				return;
-			}
-
-			buffer.chunks[data.chunkIndex] = data.chunkData;
-			const receivedChunks = buffer.chunks.filter(Boolean).length;
-			if (receivedChunks < buffer.totalChunks) {
-				return;
-			}
-
-			const reconstructedData = buffer.chunks.join("");
-			incomingChunkBufferRef.current.delete(key);
-
-			const receivedMessage = {
-				type: "file",
-				fileName: buffer.fileName,
-				fileType: buffer.fileType,
-				fileKind: buffer.fileKind,
-				fileData: reconstructedData,
-				fileSize: reconstructedData.length,
-				caption: buffer.caption,
-				from: data.from,
-				messageId: buffer.messageId,
-				timestamp: buffer.timestamp,
-				isMe: false,
-			};
-
-			const isChatOpenWithSender =
-				selectedUserRef.current === data.from &&
-				currentViewRef.current === "chat";
-			const incomingMsg = {
-				...receivedMessage,
-				readByMe: isChatOpenWithSender,
-			};
-
-			setMessages((prev) => {
-				const peerMessages = prev[data.from] || [];
-				const hasDuplicate = peerMessages.some(
-					(existing) => existing.messageId === incomingMsg.messageId,
-				);
-				if (hasDuplicate) {
-					return prev;
-				}
-
-				return {
-					...prev,
-					[data.from]: [...peerMessages, incomingMsg],
-				};
-			});
-
-			saveMessage(username, data.from, incomingMsg).catch((err) =>
-				console.error("Failed to save chunked file message:", err),
-			);
-
-			saveFile({
-				fileName: incomingMsg.fileName,
-				fileType: incomingMsg.fileType,
-				fileSize: incomingMsg.fileSize,
-				fileData: incomingMsg.fileData,
-				from: incomingMsg.from,
-				ownerUsername: username,
-				peerUsername: incomingMsg.from,
-				timestamp: incomingMsg.timestamp,
-			}).catch((err) => console.error("Failed to save chunked file:", err));
-
-			if (incomingMsg.messageId && sendMessageRef.current) {
-				sendMessageRef.current({
-					type: "delivered",
-					to: incomingMsg.from,
-					messageId: incomingMsg.messageId,
-				});
-
-				if (isChatOpenWithSender) {
-					setTimeout(() => {
-						sendMessageRef.current?.({
-							type: "read",
-							to: incomingMsg.from,
-							messageId: incomingMsg.messageId,
-						});
-					}, 100);
 				}
 			}
 		},
@@ -1757,9 +1843,12 @@ function App() {
 
 	const handleSendFileUpload = useCallback(
 		async (filePayload) => {
-			if (!selectedUser || !filePayload?.fileData) {
+			if (!selectedUser || !filePayload?.file) {
 				return;
 			}
+
+			const file = filePayload.file;
+			const contentType = file.type || "application/octet-stream";
 
 			const messageId = createMessageId("file");
 			const timestamp = Date.now();
@@ -1771,14 +1860,15 @@ function App() {
 				from: username,
 				isMe: true,
 				status: "pending",
-				fileName: filePayload.fileName,
-				fileType: filePayload.fileType,
+				fileName: file.name,
+				fileType: file.type,
 				fileKind: filePayload.fileKind || "file",
-				fileSize: filePayload.fileSize,
+				fileSize: file.size,
 				caption: filePayload.caption || "",
 				isUploading: true,
 				uploadProgress: 0,
 				fileData: null,
+				fileUrl: null,
 			};
 
 			setMessages((prev) => ({
@@ -1790,49 +1880,135 @@ function App() {
 				console.error("Failed to save pending file message:", err),
 			);
 
-			const rawData = filePayload.fileData;
-			const totalChunks = Math.max(
-				1,
-				Math.ceil(rawData.length / CHUNK_SIZE),
-			);
-			let sendFailed = false;
-
-			for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-				const start = chunkIndex * CHUNK_SIZE;
-				const end = start + CHUNK_SIZE;
-				const chunkData = rawData.slice(start, end);
-
-				const sent = sendMessage({
-					type: "file_chunk",
-					to: selectedUser,
-					messageId,
-					fileName: filePayload.fileName,
-					fileType: filePayload.fileType,
-					fileKind: filePayload.fileKind || "file",
-					caption: filePayload.caption || "",
-					totalChunks,
-					chunkIndex,
-					chunkData,
-					timestamp,
+			try {
+				const urlResponse = await fetch("/api/files/upload-url", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						filename: file.name,
+						fileType: contentType,
+					}),
 				});
 
-				if (!sent) {
-					sendFailed = true;
-					break;
+				if (!urlResponse.ok) {
+					throw new Error("Failed to request signed upload URL");
 				}
 
-				const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+				const { uploadUrl, fileUrl } = await urlResponse.json();
+				if (!uploadUrl || !fileUrl) {
+					throw new Error("Invalid upload URL response");
+				}
+
+				await new Promise((resolve, reject) => {
+					const xhr = new XMLHttpRequest();
+					xhr.open("PUT", uploadUrl);
+					xhr.setRequestHeader("Content-Type", contentType);
+
+					xhr.upload.onprogress = (event) => {
+						if (!event.lengthComputable) {
+							return;
+						}
+
+						const progress = Math.min(
+							99,
+							Math.max(
+								1,
+								Math.round((event.loaded / event.total) * 100),
+							),
+						);
+
+						setMessages((prev) => ({
+							...prev,
+							[selectedUser]: (prev[selectedUser] || []).map(
+								(message) =>
+									message.messageId === messageId
+										? {
+												...message,
+												uploadProgress: progress,
+											}
+										: message,
+							),
+						}));
+					};
+
+					xhr.onload = () => {
+						if (xhr.status >= 200 && xhr.status < 300) {
+							resolve();
+							return;
+						}
+
+						reject(new Error("Failed to upload file to storage"));
+					};
+
+					xhr.onerror = () =>
+						reject(new Error("Network error during upload"));
+					xhr.onabort = () => reject(new Error("Upload aborted"));
+					xhr.send(file);
+				});
+
 				setMessages((prev) => ({
 					...prev,
 					[selectedUser]: (prev[selectedUser] || []).map((message) =>
 						message.messageId === messageId
-							? { ...message, uploadProgress: progress }
+							? {
+									...message,
+									status: "sent",
+									isUploading: false,
+									uploadProgress: 100,
+									fileUrl,
+								}
 							: message,
 					),
 				}));
-			}
 
-			if (sendFailed) {
+				const sent = sendMessage({
+					type: "file",
+					to: selectedUser,
+					from: username,
+					fileName: file.name,
+					fileType: contentType,
+					fileKind: filePayload.fileKind || "file",
+					fileSize: file.size,
+					fileUrl,
+					caption: filePayload.caption || "",
+					messageId,
+					timestamp,
+				});
+
+				if (!sent) {
+					throw new Error(
+						"Socket unavailable while sending file metadata",
+					);
+				}
+
+				await saveMessage(username, selectedUser, {
+					type: "file",
+					to: selectedUser,
+					from: username,
+					isMe: true,
+					status: "sent",
+					fileName: file.name,
+					fileType: contentType,
+					fileKind: filePayload.fileKind || "file",
+					fileSize: file.size,
+					fileUrl,
+					caption: filePayload.caption || "",
+					messageId,
+					timestamp,
+				});
+
+				await saveFile({
+					fileName: file.name,
+					fileType: contentType,
+					fileSize: file.size,
+					fileData: null,
+					fileUrl,
+					from: username,
+					ownerUsername: username,
+					peerUsername: selectedUser,
+					timestamp,
+				});
+			} catch (error) {
 				setMessages((prev) => ({
 					...prev,
 					[selectedUser]: (prev[selectedUser] || []).map((message) =>
@@ -1845,52 +2021,9 @@ function App() {
 							: message,
 					),
 				}));
-				showToast(
-					"File upload interrupted. Retry when reconnected.",
-					"danger",
-				);
-				return;
+				console.error("Failed to upload file:", error);
+				showToast("File upload failed. Please try again.", "danger");
 			}
-
-			setMessages((prev) => ({
-				...prev,
-				[selectedUser]: (prev[selectedUser] || []).map((message) =>
-					message.messageId === messageId
-						? {
-								...message,
-								status: "sent",
-								isUploading: false,
-								uploadProgress: 100,
-								fileData: rawData,
-							}
-						: message,
-				),
-			}));
-
-			const finalized = createFileMessage(selectedUser, {
-				...filePayload,
-				messageId,
-				timestamp,
-			});
-			await saveMessage(username, selectedUser, {
-				...finalized,
-				from: username,
-				isMe: true,
-				status: "sent",
-			}).catch((err) =>
-				console.error("Failed to persist finalized file message:", err),
-			);
-
-			saveFile({
-				fileName: filePayload.fileName,
-				fileType: filePayload.fileType,
-				fileSize: filePayload.fileSize,
-				fileData: rawData,
-				from: username,
-				ownerUsername: username,
-				peerUsername: selectedUser,
-				timestamp,
-			}).catch((err) => console.error("Failed to auto-save file:", err));
 		},
 		[selectedUser, username, sendMessage, showToast],
 	);
@@ -1994,7 +2127,7 @@ function App() {
 						return message;
 					}
 
-					if (message.type === "file" || message.type === "file-message") {
+					if (message.type === "file") {
 						return message;
 					}
 

@@ -42,11 +42,11 @@ test("validateIncomingMessage rejects oversized chat", () => {
 
 test("validateIncomingMessage accepts valid file payload", () => {
 	const result = validateIncomingMessage({
-		type: "file-message",
+		type: "file",
 		to: "bob",
 		fileName: "report.pdf",
 		fileSize: 1024,
-		fileData: "data:application/pdf;base64,AAAA",
+		fileUrl: "https://cdn.example.com/report.pdf",
 	});
 
 	assert.equal(result.valid, true);
@@ -54,11 +54,11 @@ test("validateIncomingMessage accepts valid file payload", () => {
 
 test("validateIncomingMessage rejects oversized file payload", () => {
 	const result = validateIncomingMessage({
-		type: "file-message",
+		type: "file",
 		to: "bob",
 		fileName: "large.bin",
 		fileSize: MAX_FILE_SIZE_BYTES + 1,
-		fileData: "data:application/octet-stream;base64,AAAA",
+		fileUrl: "https://cdn.example.com/large.bin",
 	});
 
 	assert.equal(result.valid, false);
@@ -78,6 +78,52 @@ test("validateIncomingMessage rejects invalid video upgrade response", () => {
 		type: "video_upgrade_response",
 		to: "bob",
 		accepted: "yes",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts direct typing payload", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+		to: "bob",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage accepts room stop_typing payload", () => {
+	const result = validateIncomingMessage({
+		type: "stop_typing",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects typing without to or roomId", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts typing with boolean isTyping", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+		to: "bob",
+		isTyping: false,
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects typing with non-boolean isTyping", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+		to: "bob",
+		isTyping: "no",
 	});
 
 	assert.equal(result.valid, false);

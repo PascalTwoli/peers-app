@@ -113,6 +113,28 @@ export function validateIncomingMessage(data) {
 		return { valid: true };
 	}
 
+	if (data.type === "typing" || data.type === "stop_typing") {
+		if (data.isTyping !== undefined && typeof data.isTyping !== "boolean") {
+			return {
+				valid: false,
+				message: "isTyping must be boolean when provided",
+			};
+		}
+
+		if (isNonEmptyString(data.roomId)) {
+			return { valid: true };
+		}
+
+		if (!isNonEmptyString(data.to)) {
+			return {
+				valid: false,
+				message: "typing and stop_typing require to or roomId",
+			};
+		}
+
+		return { valid: true };
+	}
+
 	if (data.type === "create_invite" || data.type === "list_rooms") {
 		return { valid: true };
 	}
@@ -293,13 +315,13 @@ export function validateIncomingMessage(data) {
 		}
 	}
 
-	if (data.type === "file-message") {
+	if (data.type === "file") {
 		if (!isNonEmptyString(data.fileName)) {
 			return { valid: false, message: "File name is required" };
 		}
 
-		if (!isNonEmptyString(data.fileData)) {
-			return { valid: false, message: "File payload is required" };
+		if (!isNonEmptyString(data.fileUrl)) {
+			return { valid: false, message: "fileUrl is required" };
 		}
 
 		if (
@@ -319,38 +341,6 @@ export function validateIncomingMessage(data) {
 				valid: false,
 				message: `File size must be between 1 byte and ${MAX_FILE_SIZE_BYTES} bytes`,
 			};
-		}
-
-		// Guard against malformed payloads that declare a small size but carry huge base64 data.
-		const maxEncodedLength = Math.ceil((MAX_FILE_SIZE_BYTES * 4) / 3) + 1024;
-		if (data.fileData.length > maxEncodedLength) {
-			return { valid: false, message: "File payload exceeds allowed limit" };
-		}
-	}
-
-	if (data.type === "file_chunk") {
-		if (!isNonEmptyString(data.messageId)) {
-			return { valid: false, message: "Chunk messageId is required" };
-		}
-
-		if (!isNonEmptyString(data.fileName)) {
-			return { valid: false, message: "Chunk fileName is required" };
-		}
-
-		if (!Number.isInteger(data.totalChunks) || data.totalChunks <= 0) {
-			return { valid: false, message: "Invalid totalChunks" };
-		}
-
-		if (
-			!Number.isInteger(data.chunkIndex) ||
-			data.chunkIndex < 0 ||
-			data.chunkIndex >= data.totalChunks
-		) {
-			return { valid: false, message: "Invalid chunkIndex" };
-		}
-
-		if (!isNonEmptyString(data.chunkData)) {
-			return { valid: false, message: "Chunk data is required" };
 		}
 	}
 

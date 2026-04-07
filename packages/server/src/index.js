@@ -9,15 +9,21 @@ import { randomUUID } from "crypto";
 import os from "os";
 import cors from "cors";
 import { connectDB, isDBConnected } from "./db/connect.js";
+import prisma from "./db/prisma.js";
 import Message from "./db/models/Message.js";
 import Room from "./db/models/Room.js";
-import Invite from "./db/models/Invite.js";
 import User from "./db/models/User.js";
+import { saveMessage } from "./services/messageService.js";
+import { ensureUserExists } from "./services/userService.js";
 import {
 	createCorsOriginChecker,
 	parseAllowedOrigins,
 	validateIncomingMessage,
 } from "./validation.js";
+import messageRoutes from "./routes/messages.js";
+import fileRoutes from "./routes/files.js";
+import roomsRouter from "./routes/rooms.js";
+import inviteRoutes from "./routes/invites.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,68 +61,10 @@ app.get("/api/health", (req, res) => {
 	res.json({ status: "ok", timestamp: Date.now() });
 });
 
-app.get("/api/invite/:code", (req, res) => {
-	const code = req.params.code;
-	const invite = inviteLinks.get(code);
-	if (!invite) {
-		if (!isDBConnected()) {
-			res.status(404).json({ error: "Invite not found" });
-			return;
-		}
-
-		Invite.findOne({ code, expiresAt: { $gt: new Date() } })
-			.then((dbInvite) => {
-				if (!dbInvite) {
-					res.status(404).json({ error: "Invite not found" });
-					return;
-				}
-
-				res.json({ code, username: dbInvite.createdBy });
-			})
-			.catch((error) => {
-				console.error("Failed to load invite from MongoDB:", error);
-				res.status(404).json({ error: "Invite not found" });
-			});
-		return;
-	}
-
-	res.json({ code, username: invite.owner });
-});
-
-app.get("/api/messages", async (req, res) => {
-	const { userA, userB } = req.query;
-	const parsedLimit = Number.parseInt(req.query.limit, 10);
-	const limit = Number.isFinite(parsedLimit)
-		? Math.min(Math.max(parsedLimit, 1), 200)
-		: 50;
-
-	if (!userA || !userB) {
-		res.status(400).json({ error: "userA and userB are required" });
-		return;
-	}
-
-	if (!isDBConnected()) {
-		res.status(503).json({ error: "MongoDB is unavailable" });
-		return;
-	}
-
-	try {
-		const messages = await Message.find({
-			$or: [
-				{ from: userA, to: userB },
-				{ from: userB, to: userA },
-			],
-		})
-			.sort({ timestamp: -1 })
-			.limit(limit)
-			.lean();
-
-		res.json({ messages });
-	} catch (error) {
-		console.error("Failed to fetch message history:", error);
-		res.status(500).json({ error: "Failed to fetch messages" });
-	}
-});
+app.use("/api/messages", messageRoutes);
+app.use("/api/files", fileRoutes);
+app.use("/api", roomsRouter);
+app.use("/api", inviteRoutes);
 
 // Enable trust proxy so Express recognizes ngrok headers ++++++++
 app.set("trust proxy", true);
@@ -155,6 +103,8 @@ const wss = new WebSocketServer({ server });
 
 // Store active connections: socket → username
 const activeConnections = new Map();
+// Store online users: username → socket
+const onlineUsers = new Map();
 
 // Store all registered users (persistent - survives disconnections)
 // In production, this would be a database
@@ -175,9 +125,9 @@ const roomCallStarters = new Map();
 const RATE_LIMITS = {
 	join: { max: 20, windowMs: 60_000 },
 	chat: { max: 100, windowMs: 60_000 },
-	"file-message": { max: 20, windowMs: 60_000 },
-	file_chunk: { max: 500, windowMs: 60_000 },
+	file: { max: 20, windowMs: 60_000 },
 	typing: { max: 180, windowMs: 60_000 },
+	stop_typing: { max: 180, windowMs: 60_000 },
 	signal: { max: 400, windowMs: 60_000 },
 	create_room: { max: 20, windowMs: 60_000 },
 	join_room_request: { max: 50, windowMs: 60_000 },
@@ -274,42 +224,6 @@ function persistRoomState(roomId, room, createdAt) {
 	});
 }
 
-function persistInviteLink(code, createdBy, targetRoom = null, expiresAt) {
-	if (!isDBConnected()) {
-		return;
-	}
-
-	Invite.updateOne(
-		{ code },
-		{
-			$set: {
-				createdBy,
-				targetRoom,
-				expiresAt,
-			},
-		},
-		{ upsert: true },
-	).catch((error) => {
-		console.error("Failed to persist invite:", error);
-	});
-}
-
-async function findInviteByCode(code) {
-	if (!isDBConnected()) {
-		return null;
-	}
-
-	try {
-		return await Invite.findOne({
-			code,
-			expiresAt: { $gt: new Date() },
-		}).lean();
-	} catch (error) {
-		console.error("Failed to lookup invite:", error);
-		return null;
-	}
-}
-
 function upsertUserPresence(username) {
 	if (!isDBConnected() || !username) {
 		return;
@@ -333,10 +247,9 @@ async function hydrateDurableState() {
 	}
 
 	try {
-		const [users, dbRooms, dbInvites] = await Promise.all([
+		const [users, dbRooms] = await Promise.all([
 			User.find({}, { username: 1, _id: 0 }).lean(),
 			Room.find({}).lean(),
-			Invite.find({ expiresAt: { $gt: new Date() } }).lean(),
 		]);
 
 		for (const user of users) {
@@ -355,21 +268,8 @@ async function hydrateDurableState() {
 			});
 		}
 
-		for (const invite of dbInvites) {
-			inviteLinks.set(invite.code, {
-				owner: invite.createdBy,
-				createdAt: invite.expiresAt
-					? new Date(invite.expiresAt).getTime() - INVITE_TTL_MS
-					: Date.now(),
-				expiresAt: invite.expiresAt
-					? new Date(invite.expiresAt).getTime()
-					: Date.now() + INVITE_TTL_MS,
-				targetRoom: invite.targetRoom || null,
-			});
-		}
-
 		console.log(
-			`Hydrated durable state: ${users.length} users, ${dbRooms.length} rooms, ${dbInvites.length} invites`,
+			`Hydrated durable state: ${users.length} users, ${dbRooms.length} rooms`,
 		);
 	} catch (error) {
 		console.error("Failed to hydrate durable state:", error);
@@ -394,9 +294,7 @@ function generateInviteCode() {
 }
 
 function getSocketByUsername(username) {
-	return Array.from(activeConnections.entries()).find(
-		([, activeUsername]) => activeUsername === username,
-	)?.[0];
+	return onlineUsers.get(username) || null;
 }
 
 function serializeRooms(forUser) {
@@ -638,8 +536,18 @@ function cleanupRateLimitEntries() {
 	}
 }
 
+function cleanupExpiredInviteLinks() {
+	const now = Date.now();
+	for (const [code, invite] of inviteLinks.entries()) {
+		if (!invite || invite.expiresAt <= now) {
+			inviteLinks.delete(code);
+		}
+	}
+}
+
 setInterval(cleanupExpiredQueueMessages, 60_000).unref();
 setInterval(cleanupRateLimitEntries, 60_000).unref();
+setInterval(cleanupExpiredInviteLinks, 60_000).unref();
 
 function broadcast(msg) {
 	const data = JSON.stringify(msg);
@@ -650,18 +558,126 @@ function broadcast(msg) {
 	});
 }
 
+function broadcastPresenceUpdate(username, status, excludeSocket = null) {
+	const payload = JSON.stringify({
+		type: "presence_update",
+		username,
+		status,
+	});
+
+	for (const socket of onlineUsers.values()) {
+		if (socket === excludeSocket) {
+			continue;
+		}
+
+		if (socket.readyState === socket.OPEN) {
+			socket.send(payload);
+		}
+	}
+}
+
 // Get list of online usernames
 function getOnlineUsers() {
-	return Array.from(new Set(activeConnections.values()));
+	return Array.from(onlineUsers.keys());
 }
 
 // Get list of all registered users with their online status
 function getAllUsersWithStatus() {
-	const onlineUsers = getOnlineUsers();
+	const onlineUsernames = new Set(getOnlineUsers());
 	return Array.from(registeredUsers).map((username) => ({
 		username,
-		isOnline: onlineUsers.includes(username),
+		isOnline: onlineUsernames.has(username),
 	}));
+}
+
+async function getApprovedRoomMemberUsernames(roomId) {
+	if (!roomId) {
+		return [];
+	}
+
+	try {
+		const memberships = await prisma.roomMember.findMany({
+			where: {
+				roomId,
+				status: "approved",
+			},
+			include: {
+				user: {
+					select: {
+						username: true,
+					},
+				},
+			},
+		});
+
+		return memberships
+			.map((membership) => membership.user?.username)
+			.filter(Boolean);
+	} catch {
+		return [];
+	}
+}
+
+async function handleTypingEvent(ws, data) {
+	const from = activeConnections.get(ws);
+	if (!from) {
+		return;
+	}
+
+	const eventType =
+		data.type === "stop_typing" || data.isTyping === false
+			? "stop_typing"
+			: "typing";
+
+	if (data.roomId) {
+		const room = rooms.get(data.roomId);
+		let targetMembers = [];
+
+		if (room?.members instanceof Set && room.members.size > 0) {
+			if (!room.members.has(from)) {
+				return;
+			}
+			targetMembers = Array.from(room.members);
+		} else {
+			const approvedMembers = await getApprovedRoomMemberUsernames(
+				data.roomId,
+			);
+			if (!approvedMembers.includes(from)) {
+				return;
+			}
+			targetMembers = approvedMembers;
+		}
+
+		for (const member of targetMembers) {
+			if (member === from) {
+				continue;
+			}
+
+			const targetSocket = getSocketByUsername(member);
+			if (targetSocket && targetSocket.readyState === targetSocket.OPEN) {
+				targetSocket.send(
+					JSON.stringify({
+						type: eventType,
+						from,
+						roomId: data.roomId,
+					}),
+				);
+			}
+		}
+		return;
+	}
+
+	const targetSocket = getSocketByUsername(data.to);
+	if (!targetSocket || targetSocket.readyState !== targetSocket.OPEN) {
+		return;
+	}
+
+	targetSocket.send(
+		JSON.stringify({
+			type: eventType,
+			from,
+		}),
+	);
 }
 
 // Queue a message for an offline user
@@ -745,7 +761,7 @@ wss.on("connection", (ws, req) => {
 
 			switch (data.type) {
 				case "join":
-					handleUserJoined(ws, data.username);
+					await handleUserJoined(ws, data.username);
 					sendRoomListToUser(ws, data.username);
 					break;
 
@@ -754,7 +770,6 @@ wss.on("connection", (ws, req) => {
 				case "reject":
 				case "ice":
 				case "hangup":
-				case "typing":
 				case "video-toggle":
 				case "video_upgrade_request":
 				case "video_upgrade_response":
@@ -764,14 +779,18 @@ wss.on("connection", (ws, req) => {
 				case "edit_message":
 				case "reaction":
 					// Forward real-time messages to the target user (only if online)
-					forwardToUser(data, ws, false);
+					await forwardToUser(data, ws, false);
+					break;
+
+				case "typing":
+				case "stop_typing":
+					await handleTypingEvent(ws, data);
 					break;
 
 				case "chat":
-				case "file-message":
-				case "file_chunk":
+				case "file":
 					// Forward messages - queue if user is offline
-					forwardToUser(data, ws, true);
+					await forwardToUser(data, ws, true);
 					break;
 
 				case "ping":
@@ -791,7 +810,6 @@ wss.on("connection", (ws, req) => {
 						expiresAt,
 						targetRoom: null,
 					});
-					persistInviteLink(code, from, null, new Date(expiresAt));
 					ws.send(
 						JSON.stringify({
 							type: "invite_created",
@@ -804,26 +822,23 @@ wss.on("connection", (ws, req) => {
 
 				case "invite_join": {
 					const from = activeConnections.get(ws);
-					let invite = inviteLinks.get(data.code);
-					if (!invite) {
-						const dbInvite = await findInviteByCode(data.code);
-						if (dbInvite) {
-							invite = {
-								owner: dbInvite.createdBy,
-								createdAt:
-									new Date(dbInvite.expiresAt).getTime() -
-									INVITE_TTL_MS,
-								expiresAt: new Date(dbInvite.expiresAt).getTime(),
-								targetRoom: dbInvite.targetRoom || null,
-							};
-							inviteLinks.set(data.code, invite);
-						}
-					}
+					const invite = inviteLinks.get(data.code);
 					if (!from || !invite) {
 						ws.send(
 							JSON.stringify({
 								type: "error",
 								message: "Invite code is invalid",
+							}),
+						);
+						break;
+					}
+
+					if (invite.expiresAt <= Date.now()) {
+						inviteLinks.delete(data.code);
+						ws.send(
+							JSON.stringify({
+								type: "error",
+								message: "Invite code is expired",
 							}),
 						);
 						break;
@@ -1010,6 +1025,17 @@ wss.on("connection", (ws, req) => {
 								? data.timestamp
 								: Date.now(),
 					};
+
+					await saveMessage({
+						messageId: payload.messageId,
+						from,
+						to: null,
+						roomId: payload.roomId,
+						text: payload.message,
+						fileUrl: null,
+						fileName: null,
+						timestamp: payload.timestamp,
+					});
 					persistRoomMessage(payload);
 
 					for (const member of room.members) {
@@ -1207,10 +1233,13 @@ wss.on("connection", (ws, req) => {
 		}
 	});
 
-	ws.on("close", () => {
+	ws.on("close", async () => {
 		const user_name = activeConnections.get(ws) || "Unknown";
 		const ip = socketIps.get(ws);
 		activeConnections.delete(ws);
+		if (onlineUsers.get(user_name) === ws) {
+			onlineUsers.delete(user_name);
+		}
 		socketSessions.delete(ws);
 		socketIps.delete(ws);
 		socketInviteOrigins.delete(ws);
@@ -1230,14 +1259,24 @@ wss.on("connection", (ws, req) => {
 		if (ip) {
 			decrementConnectionCount(ip);
 		}
-		const onlineUsers = getOnlineUsers();
+		if (user_name !== "Unknown") {
+			try {
+				await prisma.user.update({
+					where: { username: user_name },
+					data: { lastSeen: new Date() },
+				});
+			} catch {}
+			broadcastPresenceUpdate(user_name, "offline", ws);
+		}
+
+		const onlineUsernames = getOnlineUsers();
 		console.log(`🔴 User Disconnected: ${user_name}`);
-		console.log(`Online users now: ${onlineUsers.join(", ") || "none"}`);
+		console.log(`Online users now: ${onlineUsernames.join(", ") || "none"}`);
 
 		// Broadcast updated user list with status
 		broadcast({
 			type: "onlineUsers",
-			users: onlineUsers,
+			users: onlineUsernames,
 		});
 		broadcast({
 			type: "allUsers",
@@ -1247,23 +1286,37 @@ wss.on("connection", (ws, req) => {
 });
 
 // Forward message to target user, optionally queue if offline
-function forwardToUser(data, ws, shouldQueue = false) {
-	const targetUserWs = Array.from(activeConnections.entries()).find(
-		([, username]) => username === data.to,
-	)?.[0];
+async function forwardToUser(data, ws, shouldQueue = false) {
+	const targetUserWs = getSocketByUsername(data.to);
 
 	const from = activeConnections.get(ws);
 	console.log("Forwarding", data.type, "to", data.to, "from", from);
 
 	const payload = buildPayload(data, ws);
 
+	if (payload.type === "chat" || payload.type === "file") {
+		await saveMessage({
+			messageId: payload.messageId,
+			from,
+			to: data.to || null,
+			roomId: data.roomId || null,
+			text:
+				payload.type === "file"
+					? payload.caption || null
+					: payload.text || null,
+			fileUrl: data.fileUrl || null,
+			fileName: payload.fileName || null,
+			timestamp: payload.timestamp || Date.now(),
+		});
+	}
+
 	if (payload.type === "chat") {
 		persistDirectMessage(payload);
-	} else if (payload.type === "file-message") {
+	} else if (payload.type === "file") {
 		persistDirectMessage({
 			...payload,
 			text: payload.caption || "",
-			fileUrl: null,
+			fileUrl: payload.fileUrl || null,
 		});
 	}
 
@@ -1327,30 +1380,16 @@ function buildPayload(data, ws) {
 				accepted: Boolean(data.accepted),
 				from,
 			};
-		case "file-message":
+		case "file":
 			return {
-				type: "file-message",
+				type: "file",
 				fileName: data.fileName,
 				fileType: data.fileType,
 				fileKind: data.fileKind || "file",
 				fileSize: data.fileSize,
-				fileData: data.fileData,
+				fileUrl: data.fileUrl,
 				caption: data.caption || "",
 				messageId: data.messageId,
-				timestamp: data.timestamp || Date.now(),
-				from,
-			};
-		case "file_chunk":
-			return {
-				type: "file_chunk",
-				messageId: data.messageId,
-				fileName: data.fileName,
-				fileType: data.fileType,
-				fileKind: data.fileKind || "file",
-				caption: data.caption || "",
-				totalChunks: data.totalChunks,
-				chunkIndex: data.chunkIndex,
-				chunkData: data.chunkData,
 				timestamp: data.timestamp || Date.now(),
 				from,
 			};
@@ -1384,8 +1423,10 @@ function buildPayload(data, ws) {
 	}
 }
 
-function handleUserJoined(ws, username) {
+async function handleUserJoined(ws, username) {
 	console.log(`User joined: ${username}`);
+
+	await ensureUserExists(username);
 
 	// Register the user (persistent)
 	registeredUsers.add(username);
@@ -1396,19 +1437,24 @@ function handleUserJoined(ws, username) {
 		if (existingUsername === username && existingWs !== ws) {
 			console.log(`Removing stale connection for: ${username}`);
 			activeConnections.delete(existingWs);
+			if (onlineUsers.get(username) === existingWs) {
+				onlineUsers.delete(username);
+			}
 		}
 	}
 
 	activeConnections.set(ws, username);
+	onlineUsers.set(username, ws);
+	broadcastPresenceUpdate(username, "online", ws);
 
-	const onlineUsers = getOnlineUsers();
-	console.log(`Online users now: ${onlineUsers.join(", ")}`);
+	const onlineUsernames = getOnlineUsers();
+	console.log(`Online users now: ${onlineUsernames.join(", ")}`);
 	console.log(`Registered users: ${Array.from(registeredUsers).join(", ")}`);
 
 	// Send online users list
 	broadcast({
 		type: "onlineUsers",
-		users: onlineUsers,
+		users: onlineUsernames,
 	});
 
 	// Send all users with status

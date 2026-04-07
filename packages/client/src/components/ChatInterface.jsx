@@ -126,7 +126,7 @@ export default function ChatInterface() {
 	// Get all media files from messages for navigation
 	const mediaFiles = userMessages.filter(
 		(msg) =>
-			(msg.type === "file" || msg.type === "file-message") &&
+			msg.type === "file" &&
 			(msg.fileType?.startsWith("image/") ||
 				msg.fileType?.startsWith("video/")),
 	);
@@ -370,27 +370,15 @@ export default function ChatInterface() {
 		inputRef.current?.focus();
 	};
 
-	const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB limit for WebSocket
-
-	const readFileAsDataUrl = (file) =>
-		new Promise((resolve, reject) => {
-			const reader = new FileReader();
-			reader.onload = (event) => resolve(event.target.result);
-			reader.onerror = () => reject(new Error("Failed to read file"));
-			reader.readAsDataURL(file);
-		});
+	const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 	const sendFilesBatch = useCallback(
 		async (files, fileKind) => {
 			for (const file of files) {
-				const fileData = await readFileAsDataUrl(file);
-				handleSendFileUpload({
+				await handleSendFileUpload({
 					type: "file",
-					fileName: file.name,
-					fileType: file.type,
+					file,
 					fileKind,
-					fileSize: file.size,
-					fileData,
 					caption: "",
 				});
 			}
@@ -433,24 +421,12 @@ export default function ChatInterface() {
 		if (!file || !selectedUser) return;
 
 		try {
-			const reader = new FileReader();
-			reader.onload = (e) => {
-				const fileData = e.target.result;
-				handleSendFileUpload({
-					type: "file",
-					fileName: file.name,
-					fileType: file.type,
-					fileKind: fileKind || "file",
-					fileSize: file.size,
-					fileData: fileData,
-					caption: caption || "",
-				});
-			};
-			reader.onerror = () => {
-				console.error("Error reading file");
-				alert("Failed to read file. Please try again.");
-			};
-			reader.readAsDataURL(file);
+			await handleSendFileUpload({
+				type: "file",
+				file,
+				fileKind: fileKind || "file",
+				caption: caption || "",
+			});
 		} catch (error) {
 			console.error("Error sending file:", error);
 			alert("Failed to send file. Please try again.");
@@ -464,6 +440,11 @@ export default function ChatInterface() {
 	};
 
 	const handleSaveFile = async (fileData) => {
+		if (!fileData.fileUrl && !fileData.fileData) {
+			alert("No downloadable file URL available for this message.");
+			return;
+		}
+
 		try {
 			await saveFile({
 				...fileData,
@@ -863,8 +844,7 @@ export default function ChatInterface() {
 											</button>
 										</div>
 									</div>
-								) : msg.type === "file" ||
-								  msg.type === "file-message" ? (
+								) : msg.type === "file" ? (
 									<div className="flex flex-col gap-2">
 										{msg.isUploading ? (
 											<div className="p-3 bg-black/20 rounded-xl">
@@ -888,7 +868,7 @@ export default function ChatInterface() {
 												{msg.fileKind === "photo" ||
 												msg.fileType?.startsWith("image/") ? (
 													<img
-														src={msg.fileData}
+														src={msg.fileUrl || msg.fileData}
 														alt={msg.fileName}
 														className="max-w-full max-h-64 rounded-lg cursor-pointer hover:opacity-90 transition-opacity object-cover"
 														onClick={() => setViewingMedia(msg)}
@@ -898,7 +878,7 @@ export default function ChatInterface() {
 														className="relative cursor-pointer group"
 														onClick={() => setViewingMedia(msg)}>
 														<video
-															src={msg.fileData}
+															src={msg.fileUrl || msg.fileData}
 															className="max-w-full max-h-64 rounded-lg object-cover"
 														/>
 														<div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-lg group-hover:bg-black/50 transition-colors">
@@ -919,6 +899,18 @@ export default function ChatInterface() {
 															<p className="font-medium text-sm truncate">
 																{msg.fileName}
 															</p>
+															{(msg.fileUrl || msg.fileData) && (
+																<a
+																	href={
+																		msg.fileUrl ||
+																		msg.fileData
+																	}
+																	target="_blank"
+																	rel="noreferrer"
+																	className="text-xs text-cyan-300 hover:underline">
+																	Download
+																</a>
+															)}
 															<p className="text-xs text-white/50">
 																{(msg.fileSize / 1024).toFixed(
 																	1,
@@ -929,9 +921,16 @@ export default function ChatInterface() {
 														<button
 															onClick={(e) => {
 																e.stopPropagation();
+																if (
+																	!msg.fileUrl &&
+																	!msg.fileData
+																) {
+																	return;
+																}
 																const link =
 																	document.createElement("a");
-																link.href = msg.fileData;
+																link.href =
+																	msg.fileUrl || msg.fileData;
 																link.download = msg.fileName;
 																link.click();
 															}}

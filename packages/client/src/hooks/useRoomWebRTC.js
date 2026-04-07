@@ -25,6 +25,10 @@ export function useRoomWebRTC({
 	const pendingCandidatesRef = useRef(new Map());
 	const localStreamRef = useRef(null);
 	const cameraTrackRef = useRef(null);
+	const screenTrackRef = useRef(null);
+	const isMutedRef = useRef(false);
+	const isVideoOffRef = useRef(false);
+	const isScreenSharingRef = useRef(false);
 	const offerRetryTimersRef = useRef(new Map());
 	const audioContextRef = useRef(null);
 	const audioMetersRef = useRef(new Map());
@@ -38,6 +42,18 @@ export function useRoomWebRTC({
 	useEffect(() => {
 		localStreamRef.current = localStream;
 	}, [localStream]);
+
+	useEffect(() => {
+		isMutedRef.current = isMuted;
+	}, [isMuted]);
+
+	useEffect(() => {
+		isVideoOffRef.current = isVideoOff;
+	}, [isVideoOff]);
+
+	useEffect(() => {
+		isScreenSharingRef.current = isScreenSharing;
+	}, [isScreenSharing]);
 
 	const clearOfferRetryForPeer = useCallback((peer) => {
 		const timer = offerRetryTimersRef.current.get(peer);
@@ -366,11 +382,12 @@ export function useRoomWebRTC({
 				await pc.setRemoteDescription(
 					new RTCSessionDescription(data.answer),
 				);
+				clearOfferRetryForPeer(data.from);
 			} catch (error) {
 				console.error("Failed to handle room answer:", error);
 			}
 		},
-		[roomId],
+		[clearOfferRetryForPeer, roomId],
 	);
 
 	const handleIce = useCallback(
@@ -416,9 +433,7 @@ export function useRoomWebRTC({
 		for (const [peer, pc] of peerConnectionsRef.current.entries()) {
 			const sender = pc
 				.getSenders()
-				.find(
-					(item) => item.track?.kind === "video" || item.track === null,
-				);
+				.find((item) => item.track?.kind === "video");
 
 			if (sender) {
 				try {
@@ -463,9 +478,7 @@ export function useRoomWebRTC({
 		for (const pc of peerConnectionsRef.current.values()) {
 			const sender = pc
 				.getSenders()
-				.find(
-					(item) => item.track?.kind === "audio" || item.track === null,
-				);
+				.find((item) => item.track?.kind === "audio");
 
 			if (sender) {
 				try {
@@ -485,15 +498,84 @@ export function useRoomWebRTC({
 		}
 	}, []);
 
-	const removeLocalVideoTracks = useCallback((stream, exceptTrack = null) => {
-		for (const track of stream.getVideoTracks()) {
-			if (exceptTrack && track.id === exceptTrack.id) {
-				continue;
+	const removeLocalVideoTracks = useCallback(
+		(stream, exceptTrack = null, { stopTracks = true } = {}) => {
+			for (const track of stream.getVideoTracks()) {
+				if (exceptTrack && track.id === exceptTrack.id) {
+					continue;
+				}
+				stream.removeTrack(track);
+				if (stopTracks) {
+					track.stop();
+				}
 			}
-			stream.removeTrack(track);
-			track.stop();
+		},
+		[],
+	);
+
+	const stopScreenShare = useCallback(async () => {
+		const stream = localStreamRef.current;
+		if (!stream) {
+			return;
 		}
-	}, []);
+
+		const currentShareTrack = screenTrackRef.current;
+		if (currentShareTrack) {
+			currentShareTrack.onended = null;
+			try {
+				currentShareTrack.stop();
+			} catch {}
+		}
+		screenTrackRef.current = null;
+
+		try {
+			let cameraTrack = cameraTrackRef.current;
+			if (!cameraTrack || cameraTrack.readyState === "ended") {
+				const cameraStream = await navigator.mediaDevices.getUserMedia({
+					video: { facingMode: "user" },
+					audio: false,
+				});
+				cameraTrack = cameraStream.getVideoTracks()[0] || null;
+			}
+
+			removeLocalVideoTracks(stream, null, { stopTracks: true });
+
+			if (cameraTrack) {
+				cameraTrack.enabled = !isVideoOffRef.current;
+				stream.addTrack(cameraTrack);
+				cameraTrackRef.current = cameraTrack;
+				await replaceOutgoingVideoTrack(cameraTrack, stream);
+				setIsVideoOff(!cameraTrack.enabled);
+				broadcastMediaState({
+					isScreenSharing: false,
+					isVideoOff: !cameraTrack.enabled,
+				});
+			} else {
+				cameraTrackRef.current = null;
+				await replaceOutgoingVideoTrack(null, stream);
+				setIsVideoOff(true);
+				broadcastMediaState({
+					isScreenSharing: false,
+					isVideoOff: true,
+				});
+			}
+
+			setIsScreenSharing(false);
+			setLocalStream(new MediaStream(stream.getTracks()));
+		} catch (error) {
+			console.error("Failed to restore camera after screen share:", error);
+			onError?.(
+				"Could not restore camera after screen sharing. You may need to re-enable video.",
+			);
+			setIsScreenSharing(false);
+			broadcastMediaState({ isScreenSharing: false });
+		}
+	}, [
+		broadcastMediaState,
+		onError,
+		removeLocalVideoTracks,
+		replaceOutgoingVideoTrack,
+	]);
 
 	const toggleMute = useCallback(async () => {
 		const stream = localStreamRef.current || (await ensureLocalStream());
@@ -549,20 +631,19 @@ export function useRoomWebRTC({
 			return;
 		}
 
+		if (isScreenSharingRef.current) {
+			await stopScreenShare();
+			if (isVideoOffRef.current) {
+				return;
+			}
+		}
+
 		const currentVideoTrack = stream.getVideoTracks()[0] || null;
 		if (currentVideoTrack) {
-			await replaceOutgoingVideoTrack(null, stream);
-			removeLocalVideoTracks(stream);
-			cameraTrackRef.current = null;
-			setLocalStream(new MediaStream(stream.getTracks()));
-			setIsVideoOff(true);
-			if (isScreenSharing) {
-				setIsScreenSharing(false);
-			}
-			if (peerConnectionsRef.current.size > 0) {
-				await renegotiateAllPeers();
-			}
-			broadcastMediaState({ isVideoOff: true, isScreenSharing: false });
+			currentVideoTrack.enabled = !currentVideoTrack.enabled;
+			const nextVideoOff = !currentVideoTrack.enabled;
+			setIsVideoOff(nextVideoOff);
+			broadcastMediaState({ isVideoOff: nextVideoOff });
 			return;
 		}
 
@@ -576,7 +657,7 @@ export function useRoomWebRTC({
 				return;
 			}
 
-			removeLocalVideoTracks(stream);
+			removeLocalVideoTracks(stream, null, { stopTracks: true });
 			stream.addTrack(newVideoTrack);
 			newVideoTrack.contentHint = "motion";
 			cameraTrackRef.current = newVideoTrack;
@@ -588,9 +669,6 @@ export function useRoomWebRTC({
 			setLocalStream(new MediaStream(stream.getTracks()));
 			setIsVideoOff(false);
 			setIsScreenSharing(false);
-			if (peerConnectionsRef.current.size > 0) {
-				await renegotiateAllPeers();
-			}
 			broadcastMediaState({ isVideoOff: false });
 		} catch (error) {
 			console.error("Failed to enable room video:", error);
@@ -602,11 +680,11 @@ export function useRoomWebRTC({
 	}, [
 		broadcastMediaState,
 		ensureLocalStream,
-		isScreenSharing,
 		onError,
 		removeLocalVideoTracks,
-		renegotiateAllPeers,
 		replaceOutgoingVideoTrack,
+		stopScreenShare,
+		tuneVideoSender,
 	]);
 
 	const toggleScreenShare = useCallback(async () => {
@@ -623,50 +701,9 @@ export function useRoomWebRTC({
 			return;
 		}
 
-		if (isScreenSharing) {
-			try {
-				const cameraStream = await navigator.mediaDevices.getUserMedia({
-					video: { facingMode: "user" },
-					audio: false,
-				});
-				const cameraTrack = cameraStream.getVideoTracks()[0] || null;
-
-				if (cameraTrack) {
-					removeLocalVideoTracks(stream);
-					stream.addTrack(cameraTrack);
-					await replaceOutgoingVideoTrack(cameraTrack, stream);
-					cameraTrackRef.current = cameraTrack;
-					setIsVideoOff(false);
-					broadcastMediaState({
-						isScreenSharing: false,
-						isVideoOff: false,
-					});
-				} else {
-					await replaceOutgoingVideoTrack(null, stream);
-					removeLocalVideoTracks(stream);
-					cameraTrackRef.current = null;
-					setIsVideoOff(true);
-					broadcastMediaState({
-						isScreenSharing: false,
-						isVideoOff: true,
-					});
-				}
-
-				setIsScreenSharing(false);
-				setLocalStream(stream.clone());
-				return;
-			} catch (error) {
-				console.error(
-					"Failed to restore camera after screen share:",
-					error,
-				);
-				onError?.(
-					"Could not restore camera after screen sharing. You may need to re-enable video.",
-				);
-				setIsScreenSharing(false);
-				broadcastMediaState({ isScreenSharing: false });
-				return;
-			}
+		if (isScreenSharingRef.current) {
+			await stopScreenShare();
+			return;
 		}
 
 		try {
@@ -684,8 +721,9 @@ export function useRoomWebRTC({
 				return;
 			}
 			displayTrack.contentHint = "motion";
+			screenTrackRef.current = displayTrack;
 
-			removeLocalVideoTracks(stream);
+			removeLocalVideoTracks(stream, null, { stopTracks: false });
 			stream.addTrack(displayTrack);
 			await replaceOutgoingVideoTrack(displayTrack, stream);
 			for (const pc of peerConnectionsRef.current.values()) {
@@ -697,7 +735,7 @@ export function useRoomWebRTC({
 			broadcastMediaState({ isScreenSharing: true, isVideoOff: false });
 
 			displayTrack.onended = () => {
-				toggleScreenShare().catch((error) => {
+				stopScreenShare().catch((error) => {
 					console.error("Failed to stop room screen share:", error);
 				});
 			};
@@ -711,13 +749,64 @@ export function useRoomWebRTC({
 	}, [
 		broadcastMediaState,
 		ensureLocalStream,
-		isScreenSharing,
 		onError,
 		removeLocalVideoTracks,
-		renegotiateAllPeers,
 		replaceOutgoingVideoTrack,
+		stopScreenShare,
 		tuneVideoSender,
 	]);
+
+	useEffect(() => {
+		const stream = localStreamRef.current;
+		if (!joined || !stream) {
+			return;
+		}
+
+		const audioTrack = stream.getAudioTracks()[0];
+		if (!audioTrack) {
+			return;
+		}
+
+		audioTrack.onended = () => {
+			if (!joined || isMutedRef.current) {
+				return;
+			}
+
+			navigator.mediaDevices
+				.getUserMedia({ audio: true, video: false })
+				.then(async (audioStream) => {
+					const nextTrack = audioStream.getAudioTracks()[0];
+					if (!nextTrack || !localStreamRef.current) {
+						return;
+					}
+
+					localStreamRef.current.addTrack(nextTrack);
+					for (const pc of peerConnectionsRef.current.values()) {
+						const sender = pc
+							.getSenders()
+							.find((item) => item.track?.kind === "audio");
+						if (sender) {
+							await sender.replaceTrack(nextTrack);
+						} else {
+							pc.addTrack(nextTrack, localStreamRef.current);
+						}
+					}
+
+					setLocalStream(
+						new MediaStream(localStreamRef.current.getTracks()),
+					);
+				})
+				.catch(() => {
+					onError?.(
+						"Microphone disconnected. Please re-enable permissions.",
+					);
+				});
+		};
+
+		return () => {
+			audioTrack.onended = null;
+		};
+	}, [joined, localStream, onError]);
 
 	const cleanup = useCallback(() => {
 		for (const pc of peerConnectionsRef.current.values()) {
@@ -750,6 +839,7 @@ export function useRoomWebRTC({
 		}
 		localStreamRef.current = null;
 		cameraTrackRef.current = null;
+		screenTrackRef.current = null;
 		setLocalStream(null);
 		setIsMuted(false);
 		setIsVideoOff(false);
