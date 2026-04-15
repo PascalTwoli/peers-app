@@ -4,8 +4,10 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const region = process.env.AWS_REGION;
 const bucket = process.env.AWS_BUCKET_NAME;
-const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+const accessKeyId =
+	process.env.S3_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID;
+const secretAccessKey =
+	process.env.S3_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY;
 
 const hasAwsConfig =
 	Boolean(region) &&

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { getWebSocketUrl } from "../config/serverConfig";
 
 export function useWebSocket({
 	username,
@@ -168,15 +169,8 @@ export function useWebSocket({
 			return;
 		}
 
-		// Connect to WebSocket server
-		// In dev mode, use same hostname as page but with server port (4430)
-		// In production, use same host as page
-		const hostname = window.location.hostname;
-		const wsHost = import.meta.env.DEV
-			? `${hostname}:4430`
-			: window.location.host;
-		const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-		const wsUrl = `${wsProtocol}://${wsHost}`;
+		// Connect to environment-aware WebSocket endpoint.
+		const wsUrl = getWebSocketUrl();
 
 		const connect = () => {
 			if (!isMountedRef.current) return;

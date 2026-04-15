@@ -8,11 +8,7 @@ import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 import os from "os";
 import cors from "cors";
-import { connectDB, isDBConnected } from "./db/connect.js";
 import prisma from "./db/prisma.js";
-import Message from "./db/models/Message.js";
-import Room from "./db/models/Room.js";
-import User from "./db/models/User.js";
 import { saveMessage } from "./services/messageService.js";
 import { ensureUserExists } from "./services/userService.js";
 import {
@@ -29,8 +25,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = process.env.PORT || 4430;
-const USE_HTTP = process.env.USE_HTTP === "true";
+const PORT = Number(process.env.PORT || 8080);
+const NODE_ENV = process.env.NODE_ENV || "development";
+const IS_PRODUCTION = NODE_ENV === "production";
 const CORS_ORIGINS = parseAllowedOrigins(process.env.CORS_ORIGINS);
 const MAX_CONNECTIONS_PER_IP = Number(process.env.MAX_CONNECTIONS_PER_IP || 20);
 const OFFLINE_MESSAGE_TTL_MS = Number(
@@ -72,8 +69,14 @@ app.set("trust proxy", true);
 let server;
 let protocol = "http";
 
-// Try HTTPS first (needed for WebRTC on network), fall back to HTTP
-if (!USE_HTTP) {
+if (IS_PRODUCTION) {
+	server = http.createServer(app);
+	protocol = "http";
+	console.log(
+		"Running in production behind Railway TLS edge (HTTP inside container)",
+	);
+} else {
+	// In local development, prefer HTTPS when local certs are available.
 	try {
 		const certPath = path.join(__dirname, "..", "..", "..", "server.cert");
 		const keyPath = path.join(__dirname, "..", "..", "..", "server.key");
@@ -85,18 +88,22 @@ if (!USE_HTTP) {
 			};
 			server = https.createServer(serverOptions, app);
 			protocol = "https";
+			console.log(
+				`Running HTTPS server with local certificates on port ${PORT}`,
+			);
 		} else {
-			throw new Error("Certificates not found");
+			server = http.createServer(app);
+			protocol = "http";
+			console.log("Certificates not found, running HTTP server locally");
 		}
 	} catch (e) {
-		console.log("HTTPS not available:", e.message);
-		console.log("Falling back to HTTP (WebRTC will only work on localhost)");
+		console.log(
+			"HTTPS setup failed, running HTTP server locally:",
+			e.message,
+		);
 		server = http.createServer(app);
 		protocol = "http";
 	}
-} else {
-	server = http.createServer(app);
-	protocol = "http";
 }
 
 const wss = new WebSocketServer({ server });
@@ -146,135 +153,6 @@ const RATE_LIMITS = {
 	create_invite: { max: 50, windowMs: 60_000 },
 	invite_join: { max: 50, windowMs: 60_000 },
 };
-
-function persistDirectMessage(payload) {
-	if (!isDBConnected()) {
-		return;
-	}
-
-	const document = {
-		messageId: payload.messageId || randomUUID(),
-		from: payload.from,
-		to: payload.to,
-		text: payload.text || "",
-		fileName: payload.fileName || null,
-		fileUrl: payload.fileUrl || null,
-		timestamp: payload.timestamp || Date.now(),
-		edited: false,
-		reactions: [],
-	};
-
-	Message.updateOne(
-		{ messageId: document.messageId },
-		{ $setOnInsert: document },
-		{ upsert: true },
-	).catch((error) => {
-		console.error("Failed to persist direct message:", error);
-	});
-}
-
-function persistRoomMessage(payload) {
-	if (!isDBConnected()) {
-		return;
-	}
-
-	const document = {
-		messageId: payload.messageId || randomUUID(),
-		from: payload.from,
-		to: null,
-		roomId: payload.roomId,
-		text: payload.message || "",
-		fileName: null,
-		fileUrl: null,
-		timestamp: payload.timestamp || Date.now(),
-		edited: false,
-		reactions: [],
-	};
-
-	Message.updateOne(
-		{ messageId: document.messageId },
-		{ $setOnInsert: document },
-		{ upsert: true },
-	).catch((error) => {
-		console.error("Failed to persist room message:", error);
-	});
-}
-
-function persistRoomState(roomId, room, createdAt) {
-	if (!isDBConnected() || !roomId || !room) {
-		return;
-	}
-
-	Room.updateOne(
-		{ roomId },
-		{
-			$set: {
-				name: room.name,
-				owner: room.owner,
-				members: Array.from(room.members || []),
-				pendingRequests: Array.from(room.pendingRequests || []),
-			},
-			$setOnInsert: {
-				createdAt: createdAt || new Date(),
-			},
-		},
-		{ upsert: true },
-	).catch((error) => {
-		console.error("Failed to persist room state:", error);
-	});
-}
-
-function upsertUserPresence(username) {
-	if (!isDBConnected() || !username) {
-		return;
-	}
-
-	User.updateOne(
-		{ username },
-		{
-			$set: { lastSeen: new Date() },
-			$setOnInsert: { createdAt: new Date() },
-		},
-		{ upsert: true },
-	).catch((error) => {
-		console.error("Failed to persist user presence:", error);
-	});
-}
-
-async function hydrateDurableState() {
-	if (!isDBConnected()) {
-		return;
-	}
-
-	try {
-		const [users, dbRooms] = await Promise.all([
-			User.find({}, { username: 1, _id: 0 }).lean(),
-			Room.find({}).lean(),
-		]);
-
-		for (const user of users) {
-			if (user.username) {
-				registeredUsers.add(user.username);
-			}
-		}
-
-		for (const room of dbRooms) {
-			rooms.set(room.roomId, {
-				name: room.name,
-				owner: room.owner,
-				members: new Set(room.members || []),
-				pendingRequests: new Set(room.pendingRequests || []),
-				pendingInvites: new Set(),
-			});
-		}
-
-		console.log(
-			`Hydrated durable state: ${users.length} users, ${dbRooms.length} rooms`,
-		);
-	} catch (error) {
-		console.error("Failed to hydrate durable state:", error);
-	}
-}
 
 function randomCode(length = 6) {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -884,7 +762,6 @@ wss.on("connection", (ws, req) => {
 						pendingRequests: new Set(),
 						pendingInvites: new Set(),
 					});
-					persistRoomState(roomId, rooms.get(roomId), new Date());
 
 					const room = rooms.get(roomId);
 					for (const invitedUser of invitedUsers) {
@@ -947,7 +824,6 @@ wss.on("connection", (ws, req) => {
 						room.pendingRequests.delete(data.username);
 						room.members.add(data.username);
 					}
-					persistRoomState(data.roomId, room);
 					broadcastRoomLists();
 					break;
 				}
@@ -972,8 +848,6 @@ wss.on("connection", (ws, req) => {
 						sendRoomInvite(data.roomId, room, normalized);
 					}
 
-					persistRoomState(data.roomId, room);
-
 					broadcastRoomLists();
 					break;
 				}
@@ -987,7 +861,6 @@ wss.on("connection", (ws, req) => {
 					if (data.accept) {
 						room.members.add(from);
 					}
-					persistRoomState(data.roomId, room);
 
 					const ownerSocket = getSocketByUsername(room.owner);
 					if (ownerSocket && ownerSocket.readyState === ownerSocket.OPEN) {
@@ -1036,7 +909,6 @@ wss.on("connection", (ws, req) => {
 						fileName: null,
 						timestamp: payload.timestamp,
 					});
-					persistRoomMessage(payload);
 
 					for (const member of room.members) {
 						const memberSocket = getSocketByUsername(member);
@@ -1310,16 +1182,6 @@ async function forwardToUser(data, ws, shouldQueue = false) {
 		});
 	}
 
-	if (payload.type === "chat") {
-		persistDirectMessage(payload);
-	} else if (payload.type === "file") {
-		persistDirectMessage({
-			...payload,
-			text: payload.caption || "",
-			fileUrl: payload.fileUrl || null,
-		});
-	}
-
 	if (targetUserWs && targetUserWs.readyState === targetUserWs.OPEN) {
 		targetUserWs.send(JSON.stringify(payload));
 	} else if (shouldQueue && registeredUsers.has(data.to)) {
@@ -1430,7 +1292,6 @@ async function handleUserJoined(ws, username) {
 
 	// Register the user (persistent)
 	registeredUsers.add(username);
-	upsertUserPresence(username);
 
 	// Check if this username already exists with a different socket (reconnection)
 	for (const [existingWs, existingUsername] of activeConnections.entries()) {
@@ -1476,9 +1337,13 @@ app.use((req, res, next) => {
 	if (fs.existsSync(indexPath)) {
 		res.sendFile(indexPath);
 	} else {
-		res.status(503).send(
-			"Client build not found. Run npm run build -w @peers/client or start the Vite dev server.",
-		);
+		res.json({
+			name: "peers-server",
+			status: "ok",
+			message:
+				"Backend is running. Client build is not deployed on this service.",
+			health: "/api/health",
+		});
 	}
 });
 
@@ -1508,16 +1373,4 @@ server.listen(PORT, HOST, () => {
 			}
 		}
 	});
-
-	connectDB()
-		.then((connected) => {
-			if (!connected) {
-				return;
-			}
-
-			hydrateDurableState();
-		})
-		.catch((error) => {
-			console.warn("MongoDB startup connection failed:", error.message);
-		});
 });

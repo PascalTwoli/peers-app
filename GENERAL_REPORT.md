@@ -248,7 +248,7 @@ This reduces drift between web and mobile behavior.
 ### Baseline Production Stack
 
 - Web frontend: Vercel, Netlify, or Azure Static Web Apps
-- Signaling/WebSocket backend: Azure Container Apps or Fly.io
+- Signaling/WebSocket backend: Railway or Azure Container Apps
 - TURN server: managed coturn deployment
 - Database: Postgres
 - Cache/ephemeral state: Redis

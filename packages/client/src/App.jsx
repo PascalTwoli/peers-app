@@ -25,6 +25,7 @@ import {
 	createCallLog,
 	createTextMessage,
 } from "./utils/messageFactory";
+import { apiUrl } from "./config/serverConfig";
 
 const ROOM_MESSAGES_STORAGE_KEY_PREFIX = "peers_room_messages";
 
@@ -1881,7 +1882,7 @@ function App() {
 			);
 
 			try {
-				const urlResponse = await fetch("/api/files/upload-url", {
+				const urlResponse = await fetch(apiUrl("/api/files/upload-url"), {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({

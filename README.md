@@ -101,7 +101,7 @@ npm test
 
 - WebRTC behavior can still vary by browser/device (especially mobile screen share support and permissions UX).
 - Mesh topology for room calls can degrade as participant count grows; SFU migration is recommended for scale.
-- There is no backend persistence yet for users/messages/rooms beyond current local/offline strategies.
+- Some runtime state is still in-memory and should move to Redis/DB-backed services for full horizontal scale.
 - Authentication is intentionally not present; this is open-access by design.
 
 ## Blank Page Troubleshooting
@@ -138,11 +138,27 @@ Peers intentionally has no account system. Safety is handled with backend contro
 ## Environment Variables (Server)
 
 - `HOST` default `0.0.0.0`
-- `PORT` default `4430`
-- `USE_HTTP` default `false`
+- `PORT` default `8080` (Railway sets this automatically in production)
+- `NODE_ENV` set to `production` on hosted deployments
 - `CORS_ORIGINS` default localhost allow-list, comma separated (`*` allowed for fully open)
 - `MAX_CONNECTIONS_PER_IP` default `20`
 - `OFFLINE_MESSAGE_TTL_MS` default `604800000` (7 days)
+
+Server startup mode:
+
+- Production (`NODE_ENV=production`): runs HTTP inside container behind Railway TLS edge
+- Local development: attempts local HTTPS via `server.cert`/`server.key`, falls back to HTTP
+
+## Client Environment Switching
+
+Client server endpoints are configured in [packages/client/src/config/serverConfig.js](packages/client/src/config/serverConfig.js):
+
+- Development API base: `https://localhost:8080`
+- Development WebSocket: `wss://localhost:8080`
+- Production API base: `https://peers-server-prod-production.up.railway.app`
+- Production WebSocket: `wss://peers-server-prod-production.up.railway.app`
+
+The client switches automatically using `import.meta.env.DEV` (works locally and on Vercel without manual edits).
 
 ## Forward Architecture Plan
 
@@ -164,7 +180,7 @@ This future move can be done behind service adapters without changing most UI co
 
 - Production hosting:
    - Frontend: Vercel/Netlify/Azure Static Web Apps.
-   - Signaling API/WebSocket: Azure Container Apps or Fly.io for long-lived connections.
+   - Signaling API/WebSocket: Railway or Azure Container Apps for long-lived connections.
    - TURN: Managed coturn deployment (required for NAT/firewall reliability).
    - Storage: Postgres + Redis + object storage (S3/Azure Blob).
 
