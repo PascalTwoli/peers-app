@@ -1,13 +1,16 @@
-import { Space_Grotesk, Manrope } from "next/font/google";
+import { Sora, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 
-const headingFont = Space_Grotesk({
+const headingFont = Sora({
 	subsets: ["latin"],
 	variable: "--font-heading",
 });
-const bodyFont = Manrope({ subsets: ["latin"], variable: "--font-body" });
+const bodyFont = Plus_Jakarta_Sans({
+	subsets: ["latin"],
+	variable: "--font-body",
+});
 
 export const metadata = {
 	title: "Peers | Social Workspace",
@@ -21,6 +24,7 @@ export default function RootLayout({ children }) {
 			<body className={`${headingFont.variable} ${bodyFont.variable}`}>
 				<div className="site-bg">
 					<Navbar />
+					<div className="navbar-spacer" aria-hidden="true" />
 					<main>{children}</main>
 					<Footer />
 				</div>

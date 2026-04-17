@@ -25,8 +25,8 @@ export default function Navbar() {
 	const [open, setOpen] = useState(false);
 
 	return (
-		<header className="sticky top-0 z-40 border-b border-line/80 bg-ink/90 backdrop-blur-xl">
-			<div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+		<header className="fixed inset-x-0 top-0 z-50 px-3 pt-3 sm:px-4">
+			<div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 rounded-2xl border border-white/15 bg-slate-950/35 px-4 py-3 shadow-[0_12px_36px_rgba(2,8,22,0.42)] backdrop-blur-xl sm:px-6">
 				<Link href="/" className="group inline-flex items-center gap-2">
 					<span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-cyan-500/20 text-sm font-semibold text-cyan-200 shadow-cyan">
 						P
@@ -58,15 +58,15 @@ export default function Navbar() {
 				<button
 					type="button"
 					onClick={() => setOpen((v) => !v)}
-					className="rounded-xl border border-line px-3 py-2 text-sm text-slate-200 md:hidden"
+					className="rounded-xl border border-white/20 bg-slate-900/50 px-3 py-2 text-sm text-slate-200 md:hidden"
 					aria-label="Toggle menu">
 					Menu
 				</button>
 			</div>
 
 			{open && (
-				<div className="border-t border-line bg-panel/95 px-4 py-4 md:hidden">
-					<div className="mx-auto flex max-w-6xl flex-col gap-2">
+				<div className="mx-auto mt-2 w-full max-w-6xl rounded-2xl border border-white/15 bg-slate-950/65 px-4 py-4 shadow-[0_12px_34px_rgba(2,8,22,0.5)] backdrop-blur-xl md:hidden">
+					<div className="flex flex-col gap-2">
 						{navItems.map((item) => (
 							<Link
 								key={item.href}
