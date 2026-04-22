@@ -223,6 +223,56 @@ export function validateIncomingMessage(data) {
 		return { valid: true };
 	}
 
+	if (data.type === "room_file") {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
+		}
+
+		if (!isNonEmptyString(data.fileName)) {
+			return { valid: false, message: "File name is required" };
+		}
+
+		if (!isNonEmptyString(data.fileUrl)) {
+			return { valid: false, message: "fileUrl is required" };
+		}
+
+		if (
+			data.fileKind !== undefined &&
+			data.fileKind !== "photo" &&
+			data.fileKind !== "file"
+		) {
+			return { valid: false, message: "Invalid file kind" };
+		}
+
+		if (typeof data.fileSize !== "number" || Number.isNaN(data.fileSize)) {
+			return { valid: false, message: "Invalid file size" };
+		}
+
+		if (data.fileSize <= 0 || data.fileSize > MAX_FILE_SIZE_BYTES) {
+			return {
+				valid: false,
+				message: `File size must be between 1 byte and ${MAX_FILE_SIZE_BYTES} bytes`,
+			};
+		}
+
+		return { valid: true };
+	}
+
+	if (data.type === "room_reaction") {
+		if (!isNonEmptyString(data.roomId) || !isNonEmptyString(data.messageId)) {
+			return {
+				valid: false,
+				message: "roomId and messageId are required",
+			};
+		}
+
+		if (!isNonEmptyString(data.emoji) || data.emoji.length > 10) {
+			return { valid: false, message: "Invalid emoji" };
+		}
+
+		return { valid: true };
+	}
+
 	if (data.type === "room_message_status") {
 		if (!isNonEmptyString(data.roomId) || !isNonEmptyString(data.messageId)) {
 			return {

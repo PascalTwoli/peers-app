@@ -108,12 +108,12 @@ npm test
 
 If the browser shows a blank page after restarting backend:
 
-1. Ensure the protocol is correct: use `https://localhost:4430` when certificates are enabled.
+1. Ensure the protocol is correct: use `https://localhost:8080` when certificates are enabled.
 2. If serving from backend static files, build client first:
    - `npm run build`
 3. Or run Vite separately and open client dev URL:
    - `npm run dev:client` then open `https://localhost:5173`
-4. If port 4430 is busy, stop existing process before starting a new server.
+4. If port 8080 is busy, stop existing process before starting a new server.
 
 ## Routing Troubleshooting
 
@@ -159,6 +159,22 @@ Client server endpoints are configured in [packages/client/src/config/serverConf
 - Production WebSocket: `wss://peers-server-prod-production.up.railway.app`
 
 The client switches automatically using `import.meta.env.DEV` (works locally and on Vercel without manual edits).
+
+## Deployment Checklist
+
+1. Backend (Railway)
+   - Service variables set: `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=production`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`
+   - Deploy from `packages/server` with `railway up`
+   - Verify `https://peers-server-prod-production.up.railway.app/api/health`
+
+2. Frontend (Vercel)
+   - Deploy `packages/client` as the Vercel project root
+   - Build command: `npm run build -w @peers/client`
+   - Output directory: `packages/client/dist` (or `dist` when root is `packages/client`)
+
+3. Connectivity checks
+   - Browser console should show WebSocket to `wss://peers-server-prod-production.up.railway.app`
+   - File upload requests should target `https://peers-server-prod-production.up.railway.app/api/...`
 
 ## Forward Architecture Plan
 

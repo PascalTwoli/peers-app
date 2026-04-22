@@ -1,6 +1,27 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getWebSocketUrl } from "../config/serverConfig";
 
+function getWsCandidateUrls(primaryUrl) {
+	const candidates = [primaryUrl];
+
+	try {
+		const parsed = new URL(primaryUrl);
+		if (parsed.hostname === "localhost") {
+			const fallback = new URL(primaryUrl);
+			fallback.hostname = "127.0.0.1";
+			candidates.push(fallback.toString());
+		} else if (parsed.hostname === "127.0.0.1") {
+			const fallback = new URL(primaryUrl);
+			fallback.hostname = "localhost";
+			candidates.push(fallback.toString());
+		}
+	} catch {
+		return candidates;
+	}
+
+	return Array.from(new Set(candidates));
+}
+
 export function useWebSocket({
 	username,
 	isLoggedIn,
@@ -25,6 +46,8 @@ export function useWebSocket({
 	onRoomList,
 	onRoomJoinRequest,
 	onRoomChat,
+	onRoomFile,
+	onRoomReaction,
 	onRoomMessageStatus,
 	onRoomCreated,
 	onRoomInvite,
@@ -43,6 +66,7 @@ export function useWebSocket({
 	const wsRef = useRef(null);
 	const [isConnected, setIsConnected] = useState(false);
 	const reconnectAttemptsRef = useRef(0);
+	const urlCandidateIndexRef = useRef(0);
 	const reconnectTimeoutRef = useRef(null);
 	const heartbeatIntervalRef = useRef(null);
 	const pongTimeoutRef = useRef(null);
@@ -71,6 +95,8 @@ export function useWebSocket({
 		onRoomList,
 		onRoomJoinRequest,
 		onRoomChat,
+		onRoomFile,
+		onRoomReaction,
 		onRoomMessageStatus,
 		onRoomCreated,
 		onRoomInvite,
@@ -111,6 +137,8 @@ export function useWebSocket({
 			onRoomList,
 			onRoomJoinRequest,
 			onRoomChat,
+			onRoomFile,
+			onRoomReaction,
 			onRoomMessageStatus,
 			onRoomCreated,
 			onRoomInvite,
@@ -170,7 +198,7 @@ export function useWebSocket({
 		}
 
 		// Connect to environment-aware WebSocket endpoint.
-		const wsUrl = getWebSocketUrl();
+		const wsCandidates = getWsCandidateUrls(getWebSocketUrl());
 
 		const connect = () => {
 			if (!isMountedRef.current) return;
@@ -181,6 +209,10 @@ export function useWebSocket({
 				reconnectTimeoutRef.current = null;
 			}
 
+			const wsUrl =
+				wsCandidates[
+					Math.min(urlCandidateIndexRef.current, wsCandidates.length - 1)
+				];
 			console.log("Connecting to WebSocket:", wsUrl);
 			const ws = new WebSocket(wsUrl);
 			wsRef.current = ws;
@@ -192,6 +224,7 @@ export function useWebSocket({
 				}
 				setIsConnected(true);
 				reconnectAttemptsRef.current = 0;
+				urlCandidateIndexRef.current = 0;
 				callbacksRef.current.showToast?.("Connected to server", "success");
 				startHeartbeat();
 
@@ -263,6 +296,7 @@ export function useWebSocket({
 						case "chat":
 							cb.onMessage?.({
 								text: data.text,
+								replyTo: data.replyTo || null,
 								from: data.from,
 								messageId: data.messageId,
 								timestamp: data.timestamp,
@@ -272,6 +306,10 @@ export function useWebSocket({
 
 						case "typing":
 							cb.onTyping?.(data);
+							break;
+
+						case "stop_typing":
+							cb.onTyping?.({ ...data, isTyping: false });
 							break;
 
 						case "reject":
@@ -290,6 +328,7 @@ export function useWebSocket({
 								fileType: data.fileType,
 								fileKind: data.fileKind || "file",
 								fileSize: data.fileSize,
+								fileId: data.fileId || null,
 								fileUrl: data.fileUrl,
 								caption: data.caption || "",
 								from: data.from,
@@ -325,6 +364,14 @@ export function useWebSocket({
 
 						case "room_chat":
 							cb.onRoomChat?.(data);
+							break;
+
+						case "room_file":
+							cb.onRoomFile?.(data);
+							break;
+
+						case "room_reaction":
+							cb.onRoomReaction?.(data);
 							break;
 
 						case "room_message_status":
@@ -401,6 +448,25 @@ export function useWebSocket({
 			ws.onclose = () => {
 				setIsConnected(false);
 				stopHeartbeat();
+
+				if (
+					isMountedRef.current &&
+					urlCandidateIndexRef.current < wsCandidates.length - 1
+				) {
+					urlCandidateIndexRef.current += 1;
+					console.log(
+						"Primary WebSocket URL failed, trying fallback:",
+						wsCandidates[urlCandidateIndexRef.current],
+					);
+					reconnectTimeoutRef.current = setTimeout(() => {
+						if (isMountedRef.current) {
+							connect();
+						}
+					}, 250);
+					return;
+				}
+
+				urlCandidateIndexRef.current = 0;
 
 				// Only reconnect if still mounted and under retry limit
 				if (isMountedRef.current && reconnectAttemptsRef.current < 5) {

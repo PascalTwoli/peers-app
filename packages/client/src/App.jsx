@@ -28,6 +28,47 @@ import {
 import { apiUrl } from "./config/serverConfig";
 
 const ROOM_MESSAGES_STORAGE_KEY_PREFIX = "peers_room_messages";
+const MAX_UPLOAD_FILE_SIZE = 10 * 1024 * 1024;
+const ALLOWED_UPLOAD_MIME_PREFIXES = ["image/", "text/"];
+const ALLOWED_UPLOAD_MIME_TYPES = new Set(["application/pdf"]);
+
+function isAllowedUploadMimeType(fileType) {
+	if (!fileType || typeof fileType !== "string") {
+		return false;
+	}
+
+	if (ALLOWED_UPLOAD_MIME_TYPES.has(fileType)) {
+		return true;
+	}
+
+	return ALLOWED_UPLOAD_MIME_PREFIXES.some((prefix) =>
+		fileType.startsWith(prefix),
+	);
+}
+
+function createRoomMessagesStorageKey(username) {
+	return `${ROOM_MESSAGES_STORAGE_KEY_PREFIX}:${username}`;
+}
+
+function decodePathSegment(value) {
+	if (!value) {
+		return "";
+	}
+
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
+function encodePathSegment(value) {
+	if (!value) {
+		return "";
+	}
+
+	return encodeURIComponent(value);
+}
 
 function dedupeRoomsById(rooms) {
 	if (!Array.isArray(rooms)) {
@@ -35,65 +76,18 @@ function dedupeRoomsById(rooms) {
 	}
 
 	const seen = new Set();
-	const result = [];
+	const unique = [];
+
 	for (const room of rooms) {
 		if (!room?.roomId || seen.has(room.roomId)) {
 			continue;
 		}
+
 		seen.add(room.roomId);
-		result.push(room);
+		unique.push(room);
 	}
 
-	return result;
-}
-
-function createRoomMessagesStorageKey(username) {
-	return `${ROOM_MESSAGES_STORAGE_KEY_PREFIX}:${username}`;
-}
-
-function encodePathSegment(value) {
-	return encodeURIComponent(String(value || "").trim());
-}
-
-function decodePathSegment(value) {
-	try {
-		return decodeURIComponent(value || "");
-	} catch {
-		return value || "";
-	}
-}
-
-function getWorkspacePath({
-	currentView,
-	selectedUser,
-	selectedRoomId,
-	callPeer,
-}) {
-	if (currentView === "chat" && selectedUser) {
-		return `/app/chat/${encodePathSegment(selectedUser)}`;
-	}
-
-	if (currentView === "video" && (callPeer || selectedUser)) {
-		return `/app/call/${encodePathSegment(callPeer || selectedUser)}`;
-	}
-
-	if (currentView === "invite") {
-		return "/app/invites";
-	}
-
-	if (currentView === "room-create") {
-		return "/app/rooms/new";
-	}
-
-	if (currentView === "room" && selectedRoomId) {
-		return `/app/rooms/${encodePathSegment(selectedRoomId)}`;
-	}
-
-	if (currentView === "room-call" && selectedRoomId) {
-		return `/app/rooms/${encodePathSegment(selectedRoomId)}/call`;
-	}
-
-	return "/app";
+	return unique;
 }
 
 function parseWorkspacePath(pathname) {
@@ -101,17 +95,17 @@ function parseWorkspacePath(pathname) {
 		return { type: "external" };
 	}
 
-	const relative = pathname.replace(/^\/app/, "") || "/";
+	const relative = pathname.slice(4) || "/";
 
 	if (relative === "/" || relative === "") {
 		return { type: "placeholder" };
 	}
 
-	if (relative === "/invites") {
+	if (relative === "/invite") {
 		return { type: "invite" };
 	}
 
-	if (relative === "/rooms/new") {
+	if (relative === "/rooms/create") {
 		return { type: "room-create" };
 	}
 
@@ -148,6 +142,73 @@ function parseWorkspacePath(pathname) {
 	}
 
 	return { type: "placeholder" };
+}
+
+function getWorkspacePath({
+	currentView,
+	selectedUser,
+	selectedRoomId,
+	callPeer,
+}) {
+	if (currentView === "invite") {
+		return "/app/invite";
+	}
+
+	if (currentView === "room-create") {
+		return "/app/rooms/create";
+	}
+
+	if (currentView === "room-call" && selectedRoomId) {
+		return `/app/rooms/${encodePathSegment(selectedRoomId)}/call`;
+	}
+
+	if (currentView === "room" && selectedRoomId) {
+		return `/app/rooms/${encodePathSegment(selectedRoomId)}`;
+	}
+
+	if (currentView === "video") {
+		const peer = selectedUser || callPeer;
+		if (peer) {
+			return `/app/call/${encodePathSegment(peer)}`;
+		}
+	}
+
+	if (currentView === "chat" && selectedUser) {
+		return `/app/chat/${encodePathSegment(selectedUser)}`;
+	}
+
+	return "/app";
+}
+
+async function resolveSignedDownloadUrl({ username, fileId, fileUrl }) {
+	if (!username || (!fileId && !fileUrl)) {
+		return fileUrl || null;
+	}
+
+	try {
+		const response = await fetch(apiUrl("/api/download-url"), {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-user-name": username,
+			},
+			body: JSON.stringify({
+				username,
+				fileId,
+				fileUrl,
+			}),
+		});
+
+		if (!response.ok) {
+			return fileUrl || null;
+		}
+
+		const { downloadUrl } = await response.json();
+		return downloadUrl || fileUrl || null;
+	} catch (error) {
+		console.error("Failed to resolve signed download URL:", error);
+		return fileUrl || null;
+	}
 }
 
 function loadPersistedRoomMessages(username) {
@@ -321,10 +382,41 @@ function App() {
 		if (savedUser) {
 			setUsername(savedUser);
 			setIsLoggedIn(true);
-			setRoomMessages(loadPersistedRoomMessages(savedUser));
+			const persistedRoomMessages = loadPersistedRoomMessages(savedUser);
+			Promise.all(
+				Object.entries(persistedRoomMessages).map(
+					async ([roomId, messagesForRoom]) => {
+						const resolved = await Promise.all(
+							(messagesForRoom || []).map(async (message) => {
+								if (
+									message?.type !== "file" ||
+									(!message.fileUrl && !message.fileId)
+								) {
+									return message;
+								}
+
+								const resolvedFileUrl = await resolveSignedDownloadUrl({
+									username: savedUser,
+									fileId: message.fileId,
+									fileUrl: message.fileUrl,
+								});
+
+								return {
+									...message,
+									resolvedFileUrl,
+								};
+							}),
+						);
+
+						return [roomId, resolved];
+					},
+				),
+			).then((entries) => {
+				setRoomMessages(Object.fromEntries(entries));
+			});
 			// Load persisted messages
 			getAllMessages(savedUser)
-				.then((savedMessages) => {
+				.then(async (savedMessages) => {
 					if (savedMessages && Object.keys(savedMessages).length > 0) {
 						const normalizedMessages = {};
 						Object.entries(savedMessages).forEach(
@@ -336,7 +428,36 @@ function App() {
 								);
 							},
 						);
-						setMessages(normalizedMessages);
+
+						const resolvedMessages = {};
+						for (const [peer, peerMessages] of Object.entries(
+							normalizedMessages,
+						)) {
+							resolvedMessages[peer] = await Promise.all(
+								peerMessages.map(async (message) => {
+									if (
+										message?.type !== "file" ||
+										(!message.fileUrl && !message.fileId)
+									) {
+										return message;
+									}
+
+									const resolvedFileUrl =
+										await resolveSignedDownloadUrl({
+											username: savedUser,
+											fileId: message.fileId,
+											fileUrl: message.fileUrl,
+										});
+
+									return {
+										...message,
+										resolvedFileUrl,
+									};
+								}),
+							);
+						}
+
+						setMessages(resolvedMessages);
 					}
 				})
 				.catch((err) => console.error("Failed to load messages:", err));
@@ -546,13 +667,22 @@ function App() {
 		isLoggedIn,
 		onOnlineUsers: setOnlineUsers,
 		onAllUsers: setAllUsers,
-		onMessage: (msg) => {
+		onMessage: async (msg) => {
 			if (msg.from) {
+				const resolvedFileUrl =
+					msg.type === "file"
+						? await resolveSignedDownloadUrl({
+								username,
+								fileId: msg.fileId,
+								fileUrl: msg.fileUrl,
+							})
+						: null;
 				const isChatOpenWithSender =
 					selectedUserRef.current === msg.from &&
 					currentViewRef.current === "chat";
 				const incomingMsg = {
 					...msg,
+					resolvedFileUrl,
 					readByMe: isChatOpenWithSender,
 				};
 				let isNewMessage = false;
@@ -591,6 +721,8 @@ function App() {
 						fileSize: msg.fileSize,
 						fileData: msg.fileData || null,
 						fileUrl: msg.fileUrl || null,
+						resolvedFileUrl: resolvedFileUrl || null,
+						fileId: msg.fileId || null,
 						from: msg.from,
 						ownerUsername: username,
 						peerUsername: msg.from,
@@ -834,6 +966,7 @@ function App() {
 				const isMe = data.from === username;
 				const shouldMarkReadNow =
 					!isMe && selectedRoomIdRef.current === data.roomId;
+				const sentPriority = STATUS_PRIORITY.sent;
 
 				setRoomMessages((prev) => {
 					const existing = prev[data.roomId] || [];
@@ -848,6 +981,9 @@ function App() {
 
 					if (existingIndex >= 0) {
 						const next = [...existing];
+						const currentStatus = next[existingIndex].status;
+						const currentPriority =
+							STATUS_PRIORITY[currentStatus] ?? STATUS_PRIORITY.pending;
 						const deliveredBy = Array.isArray(
 							next[existingIndex].deliveredBy,
 						)
@@ -858,8 +994,13 @@ function App() {
 							: [];
 						next[existingIndex] = {
 							...next[existingIndex],
-							status: "sent",
+							status:
+								currentPriority < sentPriority
+									? "sent"
+									: currentStatus,
 							timestamp: data.timestamp || next[existingIndex].timestamp,
+							replyTo:
+								data.replyTo || next[existingIndex].replyTo || null,
 							deliveredBy: Array.from(
 								new Set([...deliveredBy, data.from]),
 							),
@@ -881,6 +1022,7 @@ function App() {
 								messageId,
 								from: data.from,
 								message: data.message,
+								replyTo: data.replyTo || null,
 								timestamp: data.timestamp || Date.now(),
 								status: "sent",
 								isMe,
@@ -915,6 +1057,150 @@ function App() {
 					"message",
 				);
 			}
+		},
+		onRoomReaction: (data) => {
+			if (!data?.roomId || !data?.messageId || !data?.emoji || !data?.from) {
+				return;
+			}
+
+			setRoomMessages((prev) => {
+				const existing = prev[data.roomId] || [];
+				const next = existing.map((message) => {
+					if (message.messageId !== data.messageId) {
+						return message;
+					}
+
+					return applyReactionToMessage(message, data.from, data.emoji);
+				});
+
+				return {
+					...prev,
+					[data.roomId]: next,
+				};
+			});
+		},
+		onRoomFile: async (data) => {
+			if (
+				!data?.from ||
+				!data?.roomId ||
+				!data?.fileUrl ||
+				!data?.fileName
+			) {
+				return;
+			}
+
+			const resolvedFileUrl = await resolveSignedDownloadUrl({
+				username,
+				fileId: data.fileId,
+				fileUrl: data.fileUrl,
+			});
+
+			const isMe = data.from === username;
+			const shouldMarkReadNow =
+				!isMe && selectedRoomIdRef.current === data.roomId;
+			const sentPriority = STATUS_PRIORITY.sent;
+
+			setRoomMessages((prev) => {
+				const existing = prev[data.roomId] || [];
+				const messageId =
+					typeof data.messageId === "string" && data.messageId.trim()
+						? data.messageId
+						: `${data.from}-${data.timestamp || Date.now()}-${data.fileName}`;
+
+				const existingIndex = existing.findIndex(
+					(item) => item.messageId === messageId,
+				);
+
+				if (existingIndex >= 0) {
+					const next = [...existing];
+					const currentStatus = next[existingIndex].status;
+					const currentPriority =
+						STATUS_PRIORITY[currentStatus] ?? STATUS_PRIORITY.pending;
+					const deliveredBy = Array.isArray(
+						next[existingIndex].deliveredBy,
+					)
+						? next[existingIndex].deliveredBy
+						: [];
+					const readBy = Array.isArray(next[existingIndex].readBy)
+						? next[existingIndex].readBy
+						: [];
+					next[existingIndex] = {
+						...next[existingIndex],
+						status:
+							currentPriority < sentPriority
+								? "sent"
+								: currentStatus,
+						timestamp: data.timestamp || next[existingIndex].timestamp,
+						fileId: data.fileId || next[existingIndex].fileId || null,
+						fileUrl: data.fileUrl || next[existingIndex].fileUrl || null,
+						replyTo: data.replyTo || next[existingIndex].replyTo || null,
+						resolvedFileUrl:
+							resolvedFileUrl ||
+							next[existingIndex].resolvedFileUrl ||
+							next[existingIndex].fileUrl ||
+							null,
+						deliveredBy: Array.from(new Set([...deliveredBy, data.from])),
+						readBy: shouldMarkReadNow
+							? Array.from(new Set([...readBy, username]))
+							: readBy,
+					};
+					return {
+						...prev,
+						[data.roomId]: next,
+					};
+				}
+
+				return {
+					...prev,
+					[data.roomId]: [
+						...existing,
+						{
+							messageId,
+							from: data.from,
+							type: "file",
+							fileName: data.fileName,
+							fileType: data.fileType,
+							fileKind: data.fileKind || "file",
+							fileSize: data.fileSize,
+							fileId: data.fileId || null,
+							fileUrl: data.fileUrl,
+							resolvedFileUrl,
+							caption: data.caption || "",
+							replyTo: data.replyTo || null,
+							timestamp: data.timestamp || Date.now(),
+							status: "sent",
+							isMe,
+							deliveredBy: [data.from],
+							readBy: shouldMarkReadNow ? [username] : [],
+						},
+					],
+				};
+			});
+
+			if (!isMe) {
+				sendMessageRef.current?.({
+					type: "room_message_status",
+					to: data.from,
+					roomId: data.roomId,
+					messageId: data.messageId,
+					status: "delivered",
+				});
+
+				if (shouldMarkReadNow) {
+					sendMessageRef.current?.({
+						type: "room_message_status",
+						to: data.from,
+						roomId: data.roomId,
+						messageId: data.messageId,
+						status: "read",
+					});
+				}
+			}
+
+			showToast(
+				`[Room ${data.roomId.slice(0, 6)}] ${data.from} sent ${data.fileName}`,
+				"message",
+			);
 		},
 		onRoomCallStarted: (data) => {
 			if (!data?.roomId || !data?.startedBy) {
@@ -1287,23 +1573,23 @@ function App() {
 			}
 		},
 		onMessageQueued: (data) => {
-			// Message was queued for offline user - update status
-			// Only upgrade from 'sent' to 'queued'
+			// Message left sender device and was accepted by server.
+			// Keep it as sent so UI stays one-tick, even when receiver is offline.
 			if (data.to && data.messageId) {
 				setMessages((prev) => ({
 					...prev,
 					[data.to]: (prev[data.to] || []).map((msg) => {
 						if (msg.messageId !== data.messageId) return msg;
 						const currentPriority = STATUS_PRIORITY[msg.status] ?? 1;
-						const newPriority = STATUS_PRIORITY.queued;
+						const newPriority = STATUS_PRIORITY.sent;
 						return newPriority > currentPriority
-							? { ...msg, status: "queued" }
+							? { ...msg, status: "sent" }
 							: msg;
 					}),
 				}));
 				// Persist to IndexedDB
-				updateMessageStatus(data.messageId, "queued").catch((err) =>
-					console.error("Failed to persist queued status:", err),
+				updateMessageStatus(data.messageId, "sent").catch((err) =>
+					console.error("Failed to persist sent status:", err),
 				);
 			}
 		},
@@ -1807,6 +2093,15 @@ function App() {
 			let msg;
 			if (typeof data === "string") {
 				msg = createTextMessage(selectedUser, data);
+			} else if (
+				data &&
+				typeof data === "object" &&
+				typeof data.text === "string"
+			) {
+				msg = {
+					...createTextMessage(selectedUser, data.text),
+					replyTo: data.replyTo || null,
+				};
 			} else {
 				return;
 			}
@@ -1842,6 +2137,36 @@ function App() {
 		[selectedUser, username, sendMessage, showToast],
 	);
 
+	const requestSignedUploadUrl = useCallback(
+		async (file, contentType) => {
+			const urlResponse = await fetch(apiUrl("/api/upload-url"), {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-user-name": username,
+				},
+				body: JSON.stringify({
+					username,
+					filename: file.name,
+					fileType: contentType,
+					fileSize: file.size,
+				}),
+			});
+
+			if (!urlResponse.ok) {
+				throw new Error("Failed to request signed upload URL");
+			}
+
+			const { uploadUrl, fileUrl, fileId } = await urlResponse.json();
+			if (!uploadUrl || !fileUrl || !fileId) {
+				throw new Error("Invalid upload URL response");
+			}
+
+			return { uploadUrl, fileUrl, fileId };
+		},
+		[username],
+	);
+
 	const handleSendFileUpload = useCallback(
 		async (filePayload) => {
 			if (!selectedUser || !filePayload?.file) {
@@ -1851,8 +2176,22 @@ function App() {
 			const file = filePayload.file;
 			const contentType = file.type || "application/octet-stream";
 
-			const messageId = createMessageId("file");
-			const timestamp = Date.now();
+			if (!isAllowedUploadMimeType(contentType)) {
+				showToast(
+					"Unsupported file type. Only images, PDF, and text files are allowed.",
+					"danger",
+				);
+				return;
+			}
+
+			if (file.size <= 0 || file.size > MAX_UPLOAD_FILE_SIZE) {
+				showToast("File size must be 10MB or less.", "danger");
+				return;
+			}
+
+			const messageId =
+				filePayload.existingMessageId || createMessageId("file");
+			const timestamp = filePayload.existingTimestamp || Date.now();
 			const localUploadMessage = {
 				type: "file",
 				to: selectedUser,
@@ -1869,36 +2208,53 @@ function App() {
 				isUploading: true,
 				uploadProgress: 0,
 				fileData: null,
+				localFile: file,
+				fileId: null,
 				fileUrl: null,
+				resolvedFileUrl: null,
 			};
 
-			setMessages((prev) => ({
-				...prev,
-				[selectedUser]: [...(prev[selectedUser] || []), localUploadMessage],
-			}));
+			setMessages((prev) => {
+				const peerMessages = prev[selectedUser] || [];
+				const hasExisting = peerMessages.some(
+					(message) => message.messageId === messageId,
+				);
 
-			saveMessage(username, selectedUser, localUploadMessage).catch((err) =>
+				return {
+					...prev,
+					[selectedUser]: hasExisting
+						? peerMessages.map((message) =>
+								message.messageId === messageId
+									? {
+											...message,
+											status: "pending",
+											isUploading: true,
+											uploadProgress: 0,
+											localFile: file,
+										}
+									: message,
+							)
+						: [...peerMessages, localUploadMessage],
+				};
+			});
+
+			saveMessage(username, selectedUser, {
+				...localUploadMessage,
+				localFile: null,
+			}).catch((err) =>
 				console.error("Failed to save pending file message:", err),
 			);
 
 			try {
-				const urlResponse = await fetch(apiUrl("/api/files/upload-url"), {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						filename: file.name,
-						fileType: contentType,
-					}),
+				const { uploadUrl, fileUrl, fileId } = await requestSignedUploadUrl(
+					file,
+					contentType,
+				);
+				const resolvedFileUrl = await resolveSignedDownloadUrl({
+					username,
+					fileId,
+					fileUrl,
 				});
-
-				if (!urlResponse.ok) {
-					throw new Error("Failed to request signed upload URL");
-				}
-
-				const { uploadUrl, fileUrl } = await urlResponse.json();
-				if (!uploadUrl || !fileUrl) {
-					throw new Error("Invalid upload URL response");
-				}
 
 				await new Promise((resolve, reject) => {
 					const xhr = new XMLHttpRequest();
@@ -1956,7 +2312,10 @@ function App() {
 									status: "sent",
 									isUploading: false,
 									uploadProgress: 100,
+									localFile: null,
+									fileId,
 									fileUrl,
+									resolvedFileUrl,
 								}
 							: message,
 					),
@@ -1970,6 +2329,7 @@ function App() {
 					fileType: contentType,
 					fileKind: filePayload.fileKind || "file",
 					fileSize: file.size,
+					fileId,
 					fileUrl,
 					caption: filePayload.caption || "",
 					messageId,
@@ -1992,7 +2352,9 @@ function App() {
 					fileType: contentType,
 					fileKind: filePayload.fileKind || "file",
 					fileSize: file.size,
+					fileId,
 					fileUrl,
+					resolvedFileUrl,
 					caption: filePayload.caption || "",
 					messageId,
 					timestamp,
@@ -2004,6 +2366,8 @@ function App() {
 					fileSize: file.size,
 					fileData: null,
 					fileUrl,
+					resolvedFileUrl,
+					fileId,
 					from: username,
 					ownerUsername: username,
 					peerUsername: selectedUser,
@@ -2018,6 +2382,7 @@ function App() {
 									...message,
 									isUploading: false,
 									status: "failed",
+									uploadProgress: 0,
 								}
 							: message,
 					),
@@ -2026,7 +2391,86 @@ function App() {
 				showToast("File upload failed. Please try again.", "danger");
 			}
 		},
-		[selectedUser, username, sendMessage, showToast],
+		[selectedUser, username, sendMessage, showToast, requestSignedUploadUrl],
+	);
+
+	const handleRetryMessage = useCallback(
+		async (message) => {
+			if (!selectedUser || !message?.messageId) {
+				return;
+			}
+
+			if (message.type === "file") {
+				if (message.fileUrl) {
+					const sent = sendMessage({
+						type: "file",
+						to: selectedUser,
+						from: username,
+						fileName: message.fileName,
+						fileType: message.fileType,
+						fileKind: message.fileKind || "file",
+						fileSize: message.fileSize,
+						fileId: message.fileId || null,
+						fileUrl: message.fileUrl,
+						caption: message.caption || "",
+						messageId: message.messageId,
+						timestamp: message.timestamp || Date.now(),
+					});
+
+					const nextStatus = sent ? "sent" : "pending";
+					setMessages((prev) => ({
+						...prev,
+						[selectedUser]: (prev[selectedUser] || []).map((item) =>
+							item.messageId === message.messageId
+								? { ...item, status: nextStatus, isUploading: false }
+								: item,
+						),
+					}));
+
+					updateMessageStatus(message.messageId, nextStatus).catch((err) =>
+						console.error("Failed to persist retried file status:", err),
+					);
+					return;
+				}
+
+				if (message.localFile) {
+					await handleSendFileUpload({
+						type: "file",
+						file: message.localFile,
+						fileKind: message.fileKind || "file",
+						caption: message.caption || "",
+						existingMessageId: message.messageId,
+						existingTimestamp: message.timestamp,
+					});
+				}
+				return;
+			}
+
+			if (typeof message.text === "string" && message.text.trim()) {
+				const sent = sendMessage({
+					type: "chat",
+					to: selectedUser,
+					text: message.text,
+					messageId: message.messageId,
+					timestamp: message.timestamp || Date.now(),
+				});
+
+				const nextStatus = sent ? "sent" : "pending";
+				setMessages((prev) => ({
+					...prev,
+					[selectedUser]: (prev[selectedUser] || []).map((item) =>
+						item.messageId === message.messageId
+							? { ...item, status: nextStatus }
+							: item,
+					),
+				}));
+
+				updateMessageStatus(message.messageId, nextStatus).catch((err) =>
+					console.error("Failed to persist retried message status:", err),
+				);
+			}
+		},
+		[selectedUser, sendMessage, username, handleSendFileUpload],
 	);
 
 	const handleEditMessage = useCallback(
@@ -2107,6 +2551,38 @@ function App() {
 			});
 		},
 		[selectedUser, sendMessage, applyReactionToMessage, username],
+	);
+
+	const handleReactToRoomMessage = useCallback(
+		(roomId, messageId, emoji) => {
+			if (!roomId || !messageId || !emoji) {
+				return;
+			}
+
+			setRoomMessages((prev) => {
+				const existing = prev[roomId] || [];
+				const next = existing.map((message) => {
+					if (message.messageId !== messageId) {
+						return message;
+					}
+
+					return applyReactionToMessage(message, username, emoji);
+				});
+
+				return {
+					...prev,
+					[roomId]: next,
+				};
+			});
+
+			sendMessage({
+				type: "room_reaction",
+				roomId,
+				messageId,
+				emoji,
+			});
+		},
+		[applyReactionToMessage, sendMessage, username],
 	);
 
 	useEffect(() => {
@@ -2324,14 +2800,30 @@ function App() {
 	);
 
 	const handleSendRoomMessage = useCallback(
-		(roomId, message) => {
-			const text = typeof message === "string" ? message.trim() : "";
+		(roomId, messageInput) => {
+			const text =
+				typeof messageInput === "string"
+					? messageInput.trim()
+					: typeof messageInput?.text === "string"
+						? messageInput.text.trim()
+						: "";
 			if (!roomId || !text) {
 				return;
 			}
 
+			const replyTo = messageInput?.replyTo || null;
+
 			const messageId = createMessageId("room");
 			const timestamp = Date.now();
+
+			const sent = sendMessage({
+				type: "room_chat",
+				roomId,
+				message: text,
+				replyTo,
+				messageId,
+				timestamp,
+			});
 
 			setRoomMessages((prev) => ({
 				...prev,
@@ -2341,24 +2833,270 @@ function App() {
 						messageId,
 						from: username,
 						message: text,
+						replyTo,
 						timestamp,
-						status: "pending",
+						status: sent ? "sent" : "pending",
 						isMe: true,
 						deliveredBy: [username],
 						readBy: [username],
 					},
 				],
 			}));
-
-			sendMessage({
-				type: "room_chat",
-				roomId,
-				message: text,
-				messageId,
-				timestamp,
-			});
 		},
 		[sendMessage, username],
+	);
+
+	const handleSendRoomFileUpload = useCallback(
+		async (roomId, filePayload) => {
+			if (!roomId || !filePayload?.file) {
+				return;
+			}
+
+			const file = filePayload.file;
+			const contentType = file.type || "application/octet-stream";
+
+			if (!isAllowedUploadMimeType(contentType)) {
+				showToast(
+					"Unsupported file type. Only images, PDF, and text files are allowed.",
+					"danger",
+				);
+				return;
+			}
+
+			if (file.size <= 0 || file.size > MAX_UPLOAD_FILE_SIZE) {
+				showToast("File size must be 10MB or less.", "danger");
+				return;
+			}
+
+			const messageId =
+				filePayload.existingMessageId || createMessageId("room-file");
+			const timestamp = filePayload.existingTimestamp || Date.now();
+			const replyTo = filePayload.replyTo || null;
+			const isRetry = Boolean(filePayload.existingMessageId);
+
+			setRoomMessages((prev) => {
+				const existing = prev[roomId] || [];
+				const nextMessage = {
+					messageId,
+					from: username,
+					type: "file",
+					fileName: file.name,
+					fileType: contentType,
+					fileKind: filePayload.fileKind || "file",
+					fileSize: file.size,
+					fileId: null,
+					caption: filePayload.caption || "",
+					replyTo,
+					fileUrl: null,
+					resolvedFileUrl: null,
+					localFile: file,
+					isUploading: true,
+					uploadProgress: 0,
+					timestamp,
+					status: "pending",
+					isMe: true,
+					deliveredBy: [username],
+					readBy: [username],
+				};
+
+				if (isRetry) {
+					return {
+						...prev,
+						[roomId]: existing.map((message) =>
+							message.messageId === messageId
+								? { ...message, ...nextMessage }
+								: message,
+						),
+					};
+				}
+
+				return {
+					...prev,
+					[roomId]: [...existing, nextMessage],
+				};
+			});
+
+			try {
+				const { uploadUrl, fileUrl, fileId } = await requestSignedUploadUrl(
+					file,
+					contentType,
+				);
+				const resolvedFileUrl = await resolveSignedDownloadUrl({
+					username,
+					fileId,
+					fileUrl,
+				});
+
+				await new Promise((resolve, reject) => {
+					const xhr = new XMLHttpRequest();
+					xhr.open("PUT", uploadUrl);
+					xhr.setRequestHeader("Content-Type", contentType);
+
+					xhr.upload.onprogress = (event) => {
+						if (!event.lengthComputable) {
+							return;
+						}
+
+						const progress = Math.min(
+							99,
+							Math.max(
+								1,
+								Math.round((event.loaded / event.total) * 100),
+							),
+						);
+
+						setRoomMessages((prev) => ({
+							...prev,
+							[roomId]: (prev[roomId] || []).map((message) =>
+								message.messageId === messageId
+									? { ...message, uploadProgress: progress }
+									: message,
+							),
+						}));
+					};
+
+					xhr.onload = () => {
+						if (xhr.status >= 200 && xhr.status < 300) {
+							resolve();
+							return;
+						}
+
+						reject(new Error("Failed to upload file to storage"));
+					};
+
+					xhr.onerror = () =>
+						reject(new Error("Network error during upload"));
+					xhr.onabort = () => reject(new Error("Upload aborted"));
+					xhr.send(file);
+				});
+
+				setRoomMessages((prev) => ({
+					...prev,
+					[roomId]: (prev[roomId] || []).map((message) =>
+						message.messageId === messageId
+							? {
+									...message,
+									isUploading: false,
+									uploadProgress: 100,
+									status: "sent",
+									fileId,
+									fileUrl,
+									resolvedFileUrl,
+								}
+							: message,
+					),
+				}));
+
+				const sent = sendMessage({
+					type: "room_file",
+					roomId,
+					fileName: file.name,
+					fileType: contentType,
+					fileKind: filePayload.fileKind || "file",
+					fileSize: file.size,
+					fileId,
+					fileUrl,
+					caption: filePayload.caption || "",
+					replyTo,
+					messageId,
+					timestamp,
+				});
+
+				if (!sent) {
+					throw new Error(
+						"Socket unavailable while sending room file metadata",
+					);
+				}
+			} catch (error) {
+				setRoomMessages((prev) => ({
+					...prev,
+					[roomId]: (prev[roomId] || []).map((message) =>
+						message.messageId === messageId
+							? {
+									...message,
+									isUploading: false,
+									status: "failed",
+								}
+							: message,
+					),
+				}));
+				console.error("Failed to upload room file:", error);
+				showToast("Room file upload failed. Please try again.", "danger");
+			}
+		},
+		[requestSignedUploadUrl, sendMessage, showToast, username],
+	);
+
+	const handleRetryRoomMessage = useCallback(
+		async (roomId, message) => {
+			if (!roomId || !message?.messageId) {
+				return;
+			}
+
+			if (message.type === "file") {
+				if (message.localFile) {
+					await handleSendRoomFileUpload(roomId, {
+						file: message.localFile,
+						fileKind: message.fileKind || "file",
+						caption: message.caption || "",
+						replyTo: message.replyTo || null,
+						existingMessageId: message.messageId,
+						existingTimestamp: message.timestamp,
+					});
+					return;
+				}
+
+				if (!message.fileUrl) {
+					return;
+				}
+
+				const sent = sendMessage({
+					type: "room_file",
+					roomId,
+					fileName: message.fileName,
+					fileType: message.fileType,
+					fileKind: message.fileKind || "file",
+					fileSize: message.fileSize,
+					fileId: message.fileId || null,
+					fileUrl: message.fileUrl,
+					caption: message.caption || "",
+					replyTo: message.replyTo || null,
+					messageId: message.messageId,
+					timestamp: message.timestamp || Date.now(),
+				});
+
+				setRoomMessages((prev) => ({
+					...prev,
+					[roomId]: (prev[roomId] || []).map((item) =>
+						item.messageId === message.messageId
+							? { ...item, status: sent ? "sent" : "pending" }
+							: item,
+					),
+				}));
+				return;
+			}
+
+			if (typeof message.message === "string" && message.message.trim()) {
+				const sent = sendMessage({
+					type: "room_chat",
+					roomId,
+					message: message.message,
+					replyTo: message.replyTo || null,
+					messageId: message.messageId,
+					timestamp: message.timestamp || Date.now(),
+				});
+
+				setRoomMessages((prev) => ({
+					...prev,
+					[roomId]: (prev[roomId] || []).map((item) =>
+						item.messageId === message.messageId
+							? { ...item, status: sent ? "sent" : "pending" }
+							: item,
+					),
+				}));
+			}
+		},
+		[sendMessage, handleSendRoomFileUpload],
 	);
 
 	const handleStartRoomCall = useCallback(
@@ -2606,6 +3344,29 @@ function App() {
 		}));
 	}, []);
 
+	const deleteLocalRoomMessages = useCallback((roomId, messageIds) => {
+		if (!roomId || !Array.isArray(messageIds) || messageIds.length === 0) {
+			return;
+		}
+
+		setRoomMessages((prev) => ({
+			...prev,
+			[roomId]: (prev[roomId] || []).filter(
+				(message) => !messageIds.includes(message.messageId),
+			),
+		}));
+	}, []);
+
+	const resolveFileDownloadUrl = useCallback(
+		async ({ fileId, fileUrl }) =>
+			resolveSignedDownloadUrl({
+				username,
+				fileId,
+				fileUrl,
+			}),
+		[username],
+	);
+
 	const contextValue = {
 		username,
 		selectedUser,
@@ -2666,6 +3427,7 @@ function App() {
 		handleSendFileUpload,
 		handleEditMessage,
 		handleReactToMessage,
+		handleReactToRoomMessage,
 		handleCreateInviteLink,
 		handleOpenInviteCenter,
 		handleOpenRoomComposer,
@@ -2678,6 +3440,7 @@ function App() {
 		handleInviteUsersToRoom,
 		handleRespondToRoomInvite,
 		handleSendRoomMessage,
+		handleSendRoomFileUpload,
 		handleStartRoomCall,
 		handleJoinRoomCall,
 		handleEndRoomCallForEveryone,
@@ -2693,6 +3456,10 @@ function App() {
 		toggleScreenShare,
 		toggleRoomScreenShare,
 		deleteLocalMessages,
+		deleteLocalRoomMessages,
+		handleRetryMessage,
+		handleRetryRoomMessage,
+		resolveFileDownloadUrl,
 	};
 
 	if (!isLoggedIn) {

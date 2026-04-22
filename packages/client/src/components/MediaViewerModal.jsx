@@ -5,6 +5,7 @@ export default function MediaViewerModal({
 	media,
 	onClose,
 	onSave,
+	onRedownload,
 	mediaList = [],
 	currentIndex = 0,
 	onNavigate,
@@ -13,6 +14,13 @@ export default function MediaViewerModal({
 
 	const isImage = media.fileType?.startsWith("image/");
 	const isVideo = media.fileType?.startsWith("video/");
+	const mediaUrl = media.resolvedFileUrl || media.fileUrl || media.fileData;
+	const [hasLoadError, setHasLoadError] = useState(false);
+	const isMissingMedia = !mediaUrl || media.isMissingMedia || hasLoadError;
+
+	useEffect(() => {
+		setHasLoadError(false);
+	}, [media?.messageId, mediaUrl]);
 
 	const hasMultipleMedia = mediaList.length > 1;
 	const hasPrevious = currentIndex > 0;
@@ -65,12 +73,12 @@ export default function MediaViewerModal({
 	};
 
 	const handleDownload = () => {
-		if (!media.fileUrl && !media.fileData) {
+		if (!mediaUrl) {
 			return;
 		}
 
 		const link = document.createElement("a");
-		link.href = media.fileUrl || media.fileData;
+		link.href = mediaUrl;
 		link.download = media.fileName;
 		link.click();
 	};
@@ -79,6 +87,10 @@ export default function MediaViewerModal({
 		if (onSave) {
 			onSave(media);
 		}
+	};
+
+	const handleRedownload = () => {
+		onRedownload?.(media);
 	};
 
 	const handlePrevious = (e) => {
@@ -176,33 +188,48 @@ export default function MediaViewerModal({
 					transition:
 						swipeOffset === 0 ? "transform 0.3s ease-out" : "none",
 				}}>
-				{isImage && (
+				{isMissingMedia ? (
+					<div className="w-[min(88vw,560px)] h-[min(78vh,520px)] rounded-2xl bg-[#161616] border border-white/10 flex flex-col items-center justify-center gap-4 px-6 text-center">
+						<div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center">
+							<Download className="w-8 h-8 text-white/80" />
+						</div>
+						<p className="text-sm text-white/75">
+							This file could not be loaded.
+						</p>
+						<button
+							onClick={(e) => {
+								e.stopPropagation();
+								handleRedownload();
+							}}
+							className="px-4 py-2 rounded-full bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors">
+							Redownload
+						</button>
+					</div>
+				) : isImage ? (
 					<img
-						src={media.fileUrl || media.fileData}
+						src={mediaUrl}
 						alt={media.fileName}
 						className="max-w-full max-h-[90vh] object-contain rounded-lg select-none pointer-events-none"
+						onError={() => setHasLoadError(true)}
 						draggable={false}
 					/>
-				)}
-				{isVideo && (
+				) : null}
+				{!isMissingMedia && isVideo && (
 					<video
-						src={media.fileUrl || media.fileData}
+						src={mediaUrl}
 						controls
 						autoPlay
+						onError={() => setHasLoadError(true)}
 						className="max-w-full max-h-[90vh] rounded-lg"
 					/>
 				)}
 			</div>
 
-			{/* File info */}
-			<div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/60 px-4 py-2 rounded-full flex items-center gap-2">
-				<p className="text-sm text-white/80">{media.fileName}</p>
-				{hasMultipleMedia && (
-					<span className="text-xs text-white/50">
-						({currentIndex + 1} / {mediaList.length})
-					</span>
-				)}
-			</div>
+			{hasMultipleMedia && (
+				<div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/50 px-3 py-1 rounded-full text-xs text-white/70">
+					{currentIndex + 1} / {mediaList.length}
+				</div>
+			)}
 		</div>
 	);
 }

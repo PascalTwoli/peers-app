@@ -38,6 +38,20 @@ model Message {
   @@index([timestamp])
 }
 
+model File {
+  id         String   @id @default(uuid()) @db.Uuid
+  uploader   String
+  fileName   String
+  fileType   String
+  fileSize   Int
+  storageKey String   @unique
+  fileUrl    String
+  createdAt  DateTime @default(now())
+
+  @@index([uploader])
+  @@index([createdAt])
+}
+
 model Reaction {
   id        String   @id @default(uuid()) @db.Uuid
   emoji     String

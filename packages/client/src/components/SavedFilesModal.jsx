@@ -52,12 +52,13 @@ export default function SavedFilesModal({
 	};
 
 	const handleDownload = (file) => {
-		if (!file.fileUrl && !file.fileData) {
+		const fileHref = file.resolvedFileUrl || file.fileUrl || file.fileData;
+		if (!fileHref) {
 			return;
 		}
 
 		const link = document.createElement("a");
-		link.href = file.fileUrl || file.fileData;
+		link.href = fileHref;
 		link.download = file.fileName;
 		link.click();
 	};
@@ -170,7 +171,11 @@ export default function SavedFilesModal({
 										}}>
 										{file.fileType?.startsWith("image/") ? (
 											<img
-												src={file.fileUrl || file.fileData}
+												src={
+													file.resolvedFileUrl ||
+													file.fileUrl ||
+													file.fileData
+												}
 												alt={file.fileName}
 												className="w-full h-full object-cover"
 											/>

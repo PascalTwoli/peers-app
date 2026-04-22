@@ -225,6 +225,53 @@ test("validateIncomingMessage rejects invalid room_media_state payload", () => {
 	assert.equal(result.valid, false);
 });
 
+test("validateIncomingMessage accepts valid room_file payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_file",
+		roomId: "room-1",
+		fileName: "notes.txt",
+		fileUrl: "https://cdn.example.com/notes.txt",
+		fileSize: 1024,
+		fileType: "text/plain",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room_file payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_file",
+		roomId: "room-1",
+		fileName: "notes.txt",
+		fileUrl: "https://cdn.example.com/notes.txt",
+		fileSize: MAX_FILE_SIZE_BYTES + 1,
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts valid room_reaction payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_reaction",
+		roomId: "room-1",
+		messageId: "msg-1",
+		emoji: ":thumbsup:",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room_reaction payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_reaction",
+		roomId: "room-1",
+		messageId: "",
+		emoji: "",
+	});
+
+	assert.equal(result.valid, false);
+});
+
 test("isTrustedLocalOrigin accepts private network origins", () => {
 	assert.equal(isTrustedLocalOrigin("https://172.20.10.3:4430"), true);
 	assert.equal(isTrustedLocalOrigin("https://192.168.1.10:4430"), true);

@@ -4,7 +4,7 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 
 export default defineConfig(({ mode }) => {
 	const env = loadEnv(mode, process.cwd(), "");
-	const apiProxyTarget = env.VITE_API_PROXY_TARGET || "http://localhost:4430";
+	const apiProxyTarget = env.VITE_API_PROXY_TARGET || "https://127.0.0.1:8080";
 
 	return {
 		plugins: [react(), basicSsl()],
@@ -16,6 +16,13 @@ export default defineConfig(({ mode }) => {
 				"/api": {
 					target: apiProxyTarget,
 					changeOrigin: true,
+					secure: false,
+				},
+				"/ws": {
+					target: apiProxyTarget,
+					changeOrigin: true,
+					secure: false,
+					ws: true,
 				},
 			},
 		},

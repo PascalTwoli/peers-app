@@ -60,6 +60,7 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api/messages", messageRoutes);
 app.use("/api/files", fileRoutes);
+app.use("/api", fileRoutes);
 app.use("/api", roomsRouter);
 app.use("/api", inviteRoutes);
 
@@ -142,6 +143,7 @@ const RATE_LIMITS = {
 	room_invite_users: { max: 80, windowMs: 60_000 },
 	room_invite_response: { max: 80, windowMs: 60_000 },
 	room_chat: { max: 200, windowMs: 60_000 },
+	room_file: { max: 120, windowMs: 60_000 },
 	room_call_start: { max: 30, windowMs: 60_000 },
 	room_call_join: { max: 60, windowMs: 60_000 },
 	room_call_leave: { max: 80, windowMs: 60_000 },
@@ -892,6 +894,7 @@ wss.on("connection", (ws, req) => {
 						roomId: data.roomId,
 						from,
 						message: data.message,
+						replyTo: data.replyTo || null,
 						messageId,
 						timestamp:
 							typeof data.timestamp === "number"
@@ -909,6 +912,83 @@ wss.on("connection", (ws, req) => {
 						fileName: null,
 						timestamp: payload.timestamp,
 					});
+
+					for (const member of room.members) {
+						const memberSocket = getSocketByUsername(member);
+						if (
+							memberSocket &&
+							memberSocket.readyState === memberSocket.OPEN
+						) {
+							memberSocket.send(JSON.stringify(payload));
+						}
+					}
+					break;
+				}
+
+				case "room_file": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+
+					const messageId =
+						typeof data.messageId === "string" && data.messageId.trim()
+							? data.messageId
+							: randomUUID();
+
+					const payload = {
+						type: "room_file",
+						roomId: data.roomId,
+						from,
+						fileName: data.fileName,
+						fileType: data.fileType,
+						fileKind: data.fileKind || "file",
+						fileSize: data.fileSize,
+						fileId: data.fileId || null,
+						fileUrl: data.fileUrl,
+						caption: data.caption || "",
+						replyTo: data.replyTo || null,
+						messageId,
+						timestamp:
+							typeof data.timestamp === "number"
+								? data.timestamp
+								: Date.now(),
+					};
+
+					await saveMessage({
+						messageId: payload.messageId,
+						from,
+						to: null,
+						roomId: payload.roomId,
+						text: payload.caption || null,
+						fileUrl: payload.fileUrl,
+						fileName: payload.fileName,
+						timestamp: payload.timestamp,
+					});
+
+					for (const member of room.members) {
+						const memberSocket = getSocketByUsername(member);
+						if (
+							memberSocket &&
+							memberSocket.readyState === memberSocket.OPEN
+						) {
+							memberSocket.send(JSON.stringify(payload));
+						}
+					}
+					break;
+				}
+
+				case "room_reaction": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+
+					const payload = {
+						type: "room_reaction",
+						roomId: data.roomId,
+						messageId: data.messageId,
+						emoji: data.emoji,
+						from,
+					};
 
 					for (const member of room.members) {
 						const memberSocket = getSocketByUsername(member);
@@ -1228,6 +1308,7 @@ function buildPayload(data, ws) {
 			return {
 				type: "chat",
 				text: data.text,
+				replyTo: data.replyTo || null,
 				from,
 				messageId: data.messageId || null,
 				timestamp: data.timestamp || Date.now(),
@@ -1249,6 +1330,7 @@ function buildPayload(data, ws) {
 				fileType: data.fileType,
 				fileKind: data.fileKind || "file",
 				fileSize: data.fileSize,
+				fileId: data.fileId || null,
 				fileUrl: data.fileUrl,
 				caption: data.caption || "",
 				messageId: data.messageId,

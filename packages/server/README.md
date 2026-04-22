@@ -4,6 +4,15 @@ Express + WebSocket signaling backend for Peers app.
 
 ## Run
 
+One-time local setup:
+
+```bash
+cp .env.example .env
+# then set a real DATABASE_URL in .env
+```
+
+The server launcher auto-loads `packages/server/.env` when present.
+
 ```bash
 npm run dev -w @peers/server
 ```
