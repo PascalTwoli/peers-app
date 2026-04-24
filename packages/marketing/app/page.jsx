@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { APP_WORKSPACE_URL } from "../lib/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ScreenshotShowcase from "@/components/ScreenshotShowcase";
 
@@ -426,7 +427,7 @@ export default function HomePage() {
 					</p>
 					<div className="mt-7 flex flex-wrap items-center justify-center gap-3">
 						<Link
-							href="https://peers-app.vercel.app/app"
+							href={APP_WORKSPACE_URL}
 							className="rounded-full bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:scale-[1.03] hover:bg-cyan-300">
 							Open Workspace
 						</Link>

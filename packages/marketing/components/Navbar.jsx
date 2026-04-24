@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { APP_WORKSPACE_URL } from "../lib/config";
 
 const navItems = [
 	{ name: "Home", href: "/" },
@@ -23,6 +24,9 @@ function navClass(isActive) {
 export default function Navbar() {
 	const pathname = usePathname();
 	const [open, setOpen] = useState(false);
+
+	// On the home page, scroll to the CTA section first; everywhere else go direct
+	const ctaHref = pathname === "/" ? "/#cta" : APP_WORKSPACE_URL;
 
 	return (
 		<header className="fixed inset-x-0 top-0 z-50 px-3 pt-3 sm:px-4">
@@ -49,7 +53,7 @@ export default function Navbar() {
 
 				<div className="hidden md:block">
 					<Link
-						href="/#cta"
+						href={ctaHref}
 						className="rounded-full bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:scale-[1.03] hover:bg-cyan-300">
 						Open Workspace
 					</Link>
@@ -77,7 +81,7 @@ export default function Navbar() {
 							</Link>
 						))}
 						<Link
-							href="/#cta"
+							href={ctaHref}
 							className="mt-2 rounded-full bg-cyan-500 px-4 py-2 text-center text-sm font-semibold text-slate-950"
 							onClick={() => setOpen(false)}>
 							Open Workspace

@@ -575,7 +575,7 @@ export function useWebRTC({
 		}, 2000);
 
 		return () => clearInterval(timer);
-	}, [isScreenSharing, remoteStream]);
+	}, [remoteStream]);
 
 	const toggleMute = useCallback(() => {
 		if (localStream) {

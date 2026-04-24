@@ -42,6 +42,8 @@ body {
 /* Hide scrollbar for Firefox */
 .hide-scrollbar {
 	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+	overscroll-behavior: contain;
 }
 
 .hide-scrollbar::-webkit-scrollbar {

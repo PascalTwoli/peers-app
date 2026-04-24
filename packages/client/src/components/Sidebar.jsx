@@ -61,13 +61,14 @@ export default function Sidebar() {
 		return `linear-gradient(135deg, hsl(${hue}, 70%, 48%), hsl(${(hue + 30) % 360}, 70%, 43%))`;
 	};
 
-	// Get users to display based on filter
-	const displayUsers =
+	// Get users to display based on filter, online users sorted to top
+	const displayUsers = (
 		userFilter === "online"
 			? onlineUsers.map((u) => ({ username: u, isOnline: true }))
 			: allUsers.length > 0
 				? allUsers
-				: onlineUsers.map((u) => ({ username: u, isOnline: true }));
+				: onlineUsers.map((u) => ({ username: u, isOnline: true }))
+	).slice().sort((a, b) => Number(b.isOnline) - Number(a.isOnline));
 
 	const onlineCount =
 		allUsers.filter((u) => u.isOnline).length || onlineUsers.length;
@@ -136,8 +137,8 @@ export default function Sidebar() {
 
 			<aside
 				className={clsx(
-					"fixed inset-y-0 left-0 z-50 md:relative md:inset-auto",
-					"bottom-16 md:bottom-auto",
+					"fixed top-0 left-0 z-50 md:relative md:inset-auto",
+					"h-[calc(100dvh-4rem)] md:h-full",
 					"w-full max-w-[420px] md:w-[380px] md:max-w-none",
 					"transition-transform duration-300",
 					sidebarOpen

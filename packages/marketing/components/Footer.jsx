@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { APP_WORKSPACE_URL } from "../lib/config";
 
 export default function Footer() {
 	return (
@@ -42,7 +43,9 @@ export default function Footer() {
 					<div>
 						<p className="mb-3 text-slate-200">Action</p>
 						<div className="space-y-2 text-slate-400">
-							<Link href="/#cta" className="block hover:text-cyan-200">
+							<Link
+								href={APP_WORKSPACE_URL}
+								className="block hover:text-cyan-200">
 								Try Peers
 							</Link>
 							<Link

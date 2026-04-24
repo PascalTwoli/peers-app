@@ -1,29 +1,32 @@
-import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { useEffect } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 import App from "./App";
-import LandingPage from "./pages/LandingPage";
-import HomePage from "./pages/HomePage";
+
+const MARKETING_URL =
+	import.meta.env.VITE_MARKETING_URL || "https://peers-hub.vercel.app";
+
+// Sends the browser to the marketing site and renders nothing while navigating.
+function MarketingRedirect() {
+	useEffect(() => {
+		window.location.replace(MARKETING_URL);
+	}, []);
+	return null;
+}
 
 export default function AppRouter() {
-	const navigate = useNavigate();
-
 	return (
 		<Routes>
-			<Route
-				path="/"
-				element={
-					<LandingPage
-						onEnterApp={() => navigate("/app")}
-						onGoHome={() => navigate("/home")}
-					/>
-				}
-			/>
-			<Route
-				path="/home"
-				element={<HomePage onOpenWorkspace={() => navigate("/app")} />}
-			/>
+			{/* Public-facing landing — lives on the marketing site */}
+			<Route path="/" element={<MarketingRedirect />} />
+
+			{/* Workspace */}
 			<Route path="/app/*" element={<App />} />
+
+			{/* Invite deep-links — must stay on the app domain */}
 			<Route path="/join/:code" element={<App />} />
-			<Route path="*" element={<Navigate to="/" replace />} />
+
+			{/* Any other path falls into the workspace */}
+			<Route path="*" element={<Navigate to="/app" replace />} />
 		</Routes>
 	);
 }

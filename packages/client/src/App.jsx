@@ -19,6 +19,9 @@ import {
 	updateMessageContent,
 	updateMessageReactions,
 	markConversationReadByUser,
+	saveRoomMessage,
+	getAllRoomMessagesByRoom,
+	updateRoomMessage as updateRoomMessageInDB,
 } from "./services/storageService";
 import {
 	createMessageId,
@@ -27,7 +30,6 @@ import {
 } from "./utils/messageFactory";
 import { apiUrl } from "./config/serverConfig";
 
-const ROOM_MESSAGES_STORAGE_KEY_PREFIX = "peers_room_messages";
 const MAX_UPLOAD_FILE_SIZE = 10 * 1024 * 1024;
 const ALLOWED_UPLOAD_MIME_PREFIXES = ["image/", "text/"];
 const ALLOWED_UPLOAD_MIME_TYPES = new Set(["application/pdf"]);
@@ -44,10 +46,6 @@ function isAllowedUploadMimeType(fileType) {
 	return ALLOWED_UPLOAD_MIME_PREFIXES.some((prefix) =>
 		fileType.startsWith(prefix),
 	);
-}
-
-function createRoomMessagesStorageKey(username) {
-	return `${ROOM_MESSAGES_STORAGE_KEY_PREFIX}:${username}`;
 }
 
 function decodePathSegment(value) {
@@ -186,11 +184,14 @@ async function resolveSignedDownloadUrl({ username, fileId, fileUrl }) {
 	}
 
 	try {
+		const sessionToken =
+			localStorage.getItem("peers_session_token") || "";
 		const response = await fetch(apiUrl("/api/download-url"), {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 				"x-user-name": username,
+				...(sessionToken && { "x-session-token": sessionToken }),
 			},
 			body: JSON.stringify({
 				username,
@@ -208,39 +209,6 @@ async function resolveSignedDownloadUrl({ username, fileId, fileUrl }) {
 	} catch (error) {
 		console.error("Failed to resolve signed download URL:", error);
 		return fileUrl || null;
-	}
-}
-
-function loadPersistedRoomMessages(username) {
-	if (!username) {
-		return {};
-	}
-
-	try {
-		const raw = localStorage.getItem(createRoomMessagesStorageKey(username));
-		if (!raw) {
-			return {};
-		}
-		const parsed = JSON.parse(raw);
-		return parsed && typeof parsed === "object" ? parsed : {};
-	} catch (error) {
-		console.error("Failed to load room messages from storage:", error);
-		return {};
-	}
-}
-
-function persistRoomMessages(username, roomMessages) {
-	if (!username) {
-		return;
-	}
-
-	try {
-		localStorage.setItem(
-			createRoomMessagesStorageKey(username),
-			JSON.stringify(roomMessages || {}),
-		);
-	} catch (error) {
-		console.error("Failed to persist room messages:", error);
 	}
 }
 
@@ -276,6 +244,7 @@ function App() {
 	const [isCalling, setIsCalling] = useState(false);
 	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const [typingUsers, setTypingUsers] = useState({}); // { username: timestamp }
+	const [roomTypingUsers, setRoomTypingUsers] = useState({}); // { roomId: { username: timestamp } }
 	const [userFilter, setUserFilter] = useState("all"); // 'all' or 'online'
 	const [callEndedInfo, setCallEndedInfo] = useState(null); // { duration, caller } for call ended modal
 	const [remoteVideoOff, setRemoteVideoOff] = useState(false); // Track when remote user turns off video
@@ -382,39 +351,38 @@ function App() {
 		if (savedUser) {
 			setUsername(savedUser);
 			setIsLoggedIn(true);
-			const persistedRoomMessages = loadPersistedRoomMessages(savedUser);
-			Promise.all(
-				Object.entries(persistedRoomMessages).map(
-					async ([roomId, messagesForRoom]) => {
-						const resolved = await Promise.all(
-							(messagesForRoom || []).map(async (message) => {
-								if (
-									message?.type !== "file" ||
-									(!message.fileUrl && !message.fileId)
-								) {
-									return message;
-								}
 
-								const resolvedFileUrl = await resolveSignedDownloadUrl({
-									username: savedUser,
-									fileId: message.fileId,
-									fileUrl: message.fileUrl,
-								});
+			// Load room messages from IndexedDB
+			getAllRoomMessagesByRoom()
+				.then(async (grouped) => {
+					const entries = await Promise.all(
+						Object.entries(grouped).map(async ([roomId, messagesForRoom]) => {
+							const resolved = await Promise.all(
+								(messagesForRoom || []).map(async (message) => {
+									if (
+										message?.type !== "file" ||
+										(!message.fileUrl && !message.fileId)
+									) {
+										return message;
+									}
+									const resolvedFileUrl = await resolveSignedDownloadUrl({
+										username: savedUser,
+										fileId: message.fileId,
+										fileUrl: message.fileUrl,
+									});
+									return { ...message, resolvedFileUrl };
+								}),
+							);
+							return [roomId, resolved];
+						}),
+					);
+					setRoomMessages(Object.fromEntries(entries));
+				})
+				.catch((err) =>
+					console.error("Failed to load room messages from IndexedDB:", err),
+				);
 
-								return {
-									...message,
-									resolvedFileUrl,
-								};
-							}),
-						);
-
-						return [roomId, resolved];
-					},
-				),
-			).then((entries) => {
-				setRoomMessages(Object.fromEntries(entries));
-			});
-			// Load persisted messages
+			// Load direct messages from IndexedDB
 			getAllMessages(savedUser)
 				.then(async (savedMessages) => {
 					if (savedMessages && Object.keys(savedMessages).length > 0) {
@@ -463,10 +431,6 @@ function App() {
 				.catch((err) => console.error("Failed to load messages:", err));
 		}
 	}, []);
-
-	useEffect(() => {
-		persistRoomMessages(username, roomMessages);
-	}, [username, roomMessages]);
 
 	useEffect(() => {
 		const match = location.pathname.match(/^\/join\/([a-zA-Z0-9]+)/);
@@ -610,6 +574,14 @@ function App() {
 			setCurrentView("placeholder");
 		}
 
+		if (
+			window.innerWidth <= 768 &&
+			parsed.type !== "placeholder" &&
+			parsed.type !== "external"
+		) {
+			setSidebarOpen(false);
+		}
+
 		queueMicrotask(() => {
 			isApplyingRouteRef.current = false;
 		});
@@ -618,6 +590,7 @@ function App() {
 		location.pathname,
 		roomCallSession?.joined,
 		roomCallSession?.roomId,
+		setSidebarOpen,
 	]);
 
 	useEffect(() => {
@@ -984,9 +957,7 @@ function App() {
 						const currentStatus = next[existingIndex].status;
 						const currentPriority =
 							STATUS_PRIORITY[currentStatus] ?? STATUS_PRIORITY.pending;
-						const deliveredBy = Array.isArray(
-							next[existingIndex].deliveredBy,
-						)
+						const deliveredBy = Array.isArray(next[existingIndex].deliveredBy)
 							? next[existingIndex].deliveredBy
 							: [];
 						const readBy = Array.isArray(next[existingIndex].readBy)
@@ -995,41 +966,37 @@ function App() {
 						next[existingIndex] = {
 							...next[existingIndex],
 							status:
-								currentPriority < sentPriority
-									? "sent"
-									: currentStatus,
+								currentPriority < sentPriority ? "sent" : currentStatus,
 							timestamp: data.timestamp || next[existingIndex].timestamp,
-							replyTo:
-								data.replyTo || next[existingIndex].replyTo || null,
-							deliveredBy: Array.from(
-								new Set([...deliveredBy, data.from]),
-							),
+							replyTo: data.replyTo || next[existingIndex].replyTo || null,
+							deliveredBy: Array.from(new Set([...deliveredBy, data.from])),
 							readBy: shouldMarkReadNow
 								? Array.from(new Set([...readBy, username]))
 								: readBy,
 						};
-						return {
-							...prev,
-							[data.roomId]: next,
-						};
+						updateRoomMessageInDB(messageId, next[existingIndex]).catch(
+							(err) => console.error("Failed to update room message in DB:", err),
+						);
+						return { ...prev, [data.roomId]: next };
 					}
 
+					const newMsg = {
+						messageId,
+						from: data.from,
+						message: data.message,
+						replyTo: data.replyTo || null,
+						timestamp: data.timestamp || Date.now(),
+						status: "sent",
+						isMe,
+						deliveredBy: [data.from],
+						readBy: shouldMarkReadNow ? [username] : [],
+					};
+					saveRoomMessage(data.roomId, newMsg).catch((err) =>
+						console.error("Failed to persist room chat message:", err),
+					);
 					return {
 						...prev,
-						[data.roomId]: [
-							...existing,
-							{
-								messageId,
-								from: data.from,
-								message: data.message,
-								replyTo: data.replyTo || null,
-								timestamp: data.timestamp || Date.now(),
-								status: "sent",
-								isMe,
-								deliveredBy: [data.from],
-								readBy: shouldMarkReadNow ? [username] : [],
-							},
-						],
+						[data.roomId]: [...existing, newMsg],
 					};
 				});
 
@@ -1060,6 +1027,11 @@ function App() {
 		},
 		onRoomReaction: (data) => {
 			if (!data?.roomId || !data?.messageId || !data?.emoji || !data?.from) {
+				return;
+			}
+
+			// Skip own echo — already applied optimistically in handleReactToRoomMessage
+			if (data.from === username) {
 				return;
 			}
 
@@ -1116,9 +1088,7 @@ function App() {
 					const currentStatus = next[existingIndex].status;
 					const currentPriority =
 						STATUS_PRIORITY[currentStatus] ?? STATUS_PRIORITY.pending;
-					const deliveredBy = Array.isArray(
-						next[existingIndex].deliveredBy,
-					)
+					const deliveredBy = Array.isArray(next[existingIndex].deliveredBy)
 						? next[existingIndex].deliveredBy
 						: [];
 					const readBy = Array.isArray(next[existingIndex].readBy)
@@ -1126,10 +1096,7 @@ function App() {
 						: [];
 					next[existingIndex] = {
 						...next[existingIndex],
-						status:
-							currentPriority < sentPriority
-								? "sent"
-								: currentStatus,
+						status: currentPriority < sentPriority ? "sent" : currentStatus,
 						timestamp: data.timestamp || next[existingIndex].timestamp,
 						fileId: data.fileId || next[existingIndex].fileId || null,
 						fileUrl: data.fileUrl || next[existingIndex].fileUrl || null,
@@ -1144,36 +1111,37 @@ function App() {
 							? Array.from(new Set([...readBy, username]))
 							: readBy,
 					};
-					return {
-						...prev,
-						[data.roomId]: next,
-					};
+					updateRoomMessageInDB(messageId, next[existingIndex]).catch((err) =>
+						console.error("Failed to update room file message in DB:", err),
+					);
+					return { ...prev, [data.roomId]: next };
 				}
 
+				const newMsg = {
+					messageId,
+					from: data.from,
+					type: "file",
+					fileName: data.fileName,
+					fileType: data.fileType,
+					fileKind: data.fileKind || "file",
+					fileSize: data.fileSize,
+					fileId: data.fileId || null,
+					fileUrl: data.fileUrl,
+					resolvedFileUrl,
+					caption: data.caption || "",
+					replyTo: data.replyTo || null,
+					timestamp: data.timestamp || Date.now(),
+					status: "sent",
+					isMe,
+					deliveredBy: [data.from],
+					readBy: shouldMarkReadNow ? [username] : [],
+				};
+				saveRoomMessage(data.roomId, newMsg).catch((err) =>
+					console.error("Failed to persist room file message:", err),
+				);
 				return {
 					...prev,
-					[data.roomId]: [
-						...existing,
-						{
-							messageId,
-							from: data.from,
-							type: "file",
-							fileName: data.fileName,
-							fileType: data.fileType,
-							fileKind: data.fileKind || "file",
-							fileSize: data.fileSize,
-							fileId: data.fileId || null,
-							fileUrl: data.fileUrl,
-							resolvedFileUrl,
-							caption: data.caption || "",
-							replyTo: data.replyTo || null,
-							timestamp: data.timestamp || Date.now(),
-							status: "sent",
-							isMe,
-							deliveredBy: [data.from],
-							readBy: shouldMarkReadNow ? [username] : [],
-						},
-					],
+					[data.roomId]: [...existing, newMsg],
 				};
 			});
 
@@ -1368,6 +1336,7 @@ function App() {
 			setSelectedRoomId(data.roomId);
 			setCurrentView("room");
 			setRoomComposerDraft({ name: "", selectedUsers: [] });
+			if (window.innerWidth <= 768) setSidebarOpen(false);
 			showToast(`Room created: ${data.roomName || data.roomId}`, "success");
 		},
 		onRoomInvite: (data) => {
@@ -1512,6 +1481,24 @@ function App() {
 					const updated = { ...prev };
 					delete updated[data.from];
 					return updated;
+				});
+			}
+		},
+		onRoomTyping: (data) => {
+			if (!data?.roomId || !data?.from) return;
+			if (data.isTyping) {
+				setRoomTypingUsers((prev) => ({
+					...prev,
+					[data.roomId]: {
+						...(prev[data.roomId] || {}),
+						[data.from]: Date.now(),
+					},
+				}));
+			} else {
+				setRoomTypingUsers((prev) => {
+					const roomTypers = { ...(prev[data.roomId] || {}) };
+					delete roomTypers[data.from];
+					return { ...prev, [data.roomId]: roomTypers };
 				});
 			}
 		},
@@ -1772,6 +1759,25 @@ function App() {
 				for (const user in updated) {
 					if (now - updated[user] > 4000) {
 						delete updated[user];
+						hasChanges = true;
+					}
+				}
+				return hasChanges ? updated : prev;
+			});
+			setRoomTypingUsers((prev) => {
+				const updated = { ...prev };
+				let hasChanges = false;
+				for (const roomId in updated) {
+					const room = { ...updated[roomId] };
+					let roomChanged = false;
+					for (const user in room) {
+						if (now - room[user] > 4000) {
+							delete room[user];
+							roomChanged = true;
+						}
+					}
+					if (roomChanged) {
+						updated[roomId] = room;
 						hasChanges = true;
 					}
 				}
@@ -2139,11 +2145,14 @@ function App() {
 
 	const requestSignedUploadUrl = useCallback(
 		async (file, contentType) => {
+			const sessionToken =
+				localStorage.getItem("peers_session_token") || "";
 			const urlResponse = await fetch(apiUrl("/api/upload-url"), {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 					"x-user-name": username,
+					...(sessionToken && { "x-session-token": sessionToken }),
 				},
 				body: JSON.stringify({
 					username,
@@ -2678,18 +2687,28 @@ function App() {
 		[selectedUser, sendMessage],
 	);
 
+	const sendRoomTypingStatus = useCallback(
+		(roomId, isTyping) => {
+			if (!roomId) return;
+			sendMessage({ type: isTyping ? "room_typing" : "room_stop_typing", roomId });
+		},
+		[sendMessage],
+	);
+
 	const handleCreateInviteLink = useCallback(() => {
 		sendMessage({ type: "create_invite" });
 	}, [sendMessage]);
 
 	const handleOpenInviteCenter = useCallback(() => {
 		setCurrentView("invite");
-	}, []);
+		if (window.innerWidth <= 768) setSidebarOpen(false);
+	}, [setSidebarOpen]);
 
 	const handleOpenRoomComposer = useCallback(() => {
 		setSelectedUser(null);
 		setCurrentView("room-create");
-	}, []);
+		if (window.innerWidth <= 768) setSidebarOpen(false);
+	}, [setSidebarOpen]);
 
 	const handleUpdateRoomComposer = useCallback((updates) => {
 		setRoomComposerDraft((prev) => ({ ...prev, ...updates }));
@@ -2825,23 +2844,26 @@ function App() {
 				timestamp,
 			});
 
+			const outgoingMsg = {
+				messageId,
+				from: username,
+				message: text,
+				replyTo,
+				timestamp,
+				status: sent ? "sent" : "pending",
+				isMe: true,
+				deliveredBy: [username],
+				readBy: [username],
+			};
+
 			setRoomMessages((prev) => ({
 				...prev,
-				[roomId]: [
-					...(prev[roomId] || []),
-					{
-						messageId,
-						from: username,
-						message: text,
-						replyTo,
-						timestamp,
-						status: sent ? "sent" : "pending",
-						isMe: true,
-						deliveredBy: [username],
-						readBy: [username],
-					},
-				],
+				[roomId]: [...(prev[roomId] || []), outgoingMsg],
 			}));
+
+			saveRoomMessage(roomId, outgoingMsg).catch((err) =>
+				console.error("Failed to persist outgoing room message:", err),
+			);
 		},
 		[sendMessage, username],
 	);
@@ -2986,6 +3008,28 @@ function App() {
 							: message,
 					),
 				}));
+
+				saveRoomMessage(roomId, {
+					messageId,
+					from: username,
+					type: "file",
+					fileName: file.name,
+					fileType: contentType,
+					fileKind: filePayload.fileKind || "file",
+					fileSize: file.size,
+					fileId,
+					fileUrl,
+					resolvedFileUrl,
+					caption: filePayload.caption || "",
+					replyTo,
+					timestamp,
+					status: "sent",
+					isMe: true,
+					deliveredBy: [username],
+					readBy: [username],
+				}).catch((err) =>
+					console.error("Failed to persist outgoing room file message:", err),
+				);
 
 				const sent = sendMessage({
 					type: "room_file",
@@ -3391,6 +3435,7 @@ function App() {
 		isCreatingRoom,
 		lastInviteLink,
 		typingUsers,
+		roomTypingUsers,
 		currentView,
 		isCallActive,
 		callType,
@@ -3446,6 +3491,7 @@ function App() {
 		handleEndRoomCallForEveryone,
 		handleLeaveRoomCall,
 		sendTypingStatus,
+		sendRoomTypingStatus,
 		handleLogout,
 		showToast,
 		toggleMute,

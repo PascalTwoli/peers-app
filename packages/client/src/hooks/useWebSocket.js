@@ -47,6 +47,7 @@ export function useWebSocket({
 	onRoomJoinRequest,
 	onRoomChat,
 	onRoomFile,
+	onRoomTyping,
 	onRoomReaction,
 	onRoomMessageStatus,
 	onRoomCreated,
@@ -96,6 +97,7 @@ export function useWebSocket({
 		onRoomJoinRequest,
 		onRoomChat,
 		onRoomFile,
+		onRoomTyping,
 		onRoomReaction,
 		onRoomMessageStatus,
 		onRoomCreated,
@@ -138,6 +140,7 @@ export function useWebSocket({
 			onRoomJoinRequest,
 			onRoomChat,
 			onRoomFile,
+			onRoomTyping,
 			onRoomReaction,
 			onRoomMessageStatus,
 			onRoomCreated,
@@ -247,6 +250,12 @@ export function useWebSocket({
 
 						case "welcome":
 							console.log("WebSocket welcome received");
+							if (data.sessionId) {
+								localStorage.setItem(
+									"peers_session_token",
+									data.sessionId,
+								);
+							}
 							break;
 
 						case "onlineUsers":
@@ -305,7 +314,7 @@ export function useWebSocket({
 							break;
 
 						case "typing":
-							cb.onTyping?.(data);
+							cb.onTyping?.({ ...data, isTyping: true });
 							break;
 
 						case "stop_typing":
@@ -368,6 +377,14 @@ export function useWebSocket({
 
 						case "room_file":
 							cb.onRoomFile?.(data);
+							break;
+
+						case "room_typing":
+						case "room_stop_typing":
+							cb.onRoomTyping?.({
+								...data,
+								isTyping: data.type === "room_typing",
+							});
 							break;
 
 						case "room_reaction":

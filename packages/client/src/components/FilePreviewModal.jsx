@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { X, Send, Paperclip } from "lucide-react";
 
-export default function FilePreviewModal({ file, onSend, onClose, initialFileKind = "file" }) {
+export default function FilePreviewModal({
+	file,
+	onSend,
+	onClose,
+	initialFileKind = "file",
+}) {
 	const [caption, setCaption] = useState("");
 	const [previewUrl, setPreviewUrl] = useState("");
 	const [fileKind, setFileKind] = useState("file");
@@ -78,7 +83,9 @@ export default function FilePreviewModal({ file, onSend, onClose, initialFileKin
 					) : (
 						<div className="flex flex-col items-center justify-center py-10 bg-surface-light rounded-lg">
 							<Paperclip className="w-12 h-12 text-gray-400 mb-3" />
-							<p className="font-medium text-white text-center break-all px-4">{file.name}</p>
+							<p className="font-medium text-white text-center break-all px-4">
+								{file.name}
+							</p>
 							<p className="text-sm text-gray-400 mt-1">
 								{formatFileSize(file.size)}
 							</p>

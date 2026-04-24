@@ -20,6 +20,7 @@ import messageRoutes from "./routes/messages.js";
 import fileRoutes from "./routes/files.js";
 import roomsRouter from "./routes/rooms.js";
 import inviteRoutes from "./routes/invites.js";
+import { registerSession, revokeSession } from "./middleware/sessionStore.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,7 +60,6 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/api/messages", messageRoutes);
-app.use("/api/files", fileRoutes);
 app.use("/api", fileRoutes);
 app.use("/api", roomsRouter);
 app.use("/api", inviteRoutes);
@@ -429,6 +429,44 @@ setInterval(cleanupExpiredQueueMessages, 60_000).unref();
 setInterval(cleanupRateLimitEntries, 60_000).unref();
 setInterval(cleanupExpiredInviteLinks, 60_000).unref();
 
+async function startupHydration() {
+	try {
+		// Restore known usernames so offline message queuing works immediately
+		const users = await prisma.user.findMany({ select: { username: true } });
+		for (const { username } of users) {
+			registeredUsers.add(username);
+		}
+		console.log(`✅ Hydrated ${users.length} registered users from DB`);
+
+		// Restore rooms with their approved members
+		const dbRooms = await prisma.room.findMany({
+			include: {
+				members: {
+					where: { status: "approved" },
+					include: { user: { select: { username: true } } },
+				},
+			},
+		});
+
+		for (const dbRoom of dbRooms) {
+			const memberUsernames = dbRoom.members
+				.map((m) => m.user?.username)
+				.filter(Boolean);
+
+			rooms.set(dbRoom.roomId, {
+				name: dbRoom.name,
+				owner: dbRoom.owner,
+				members: new Set([dbRoom.owner, ...memberUsernames]),
+				pendingRequests: new Set(),
+				pendingInvites: new Set(),
+			});
+		}
+		console.log(`✅ Hydrated ${dbRooms.length} rooms from DB`);
+	} catch (err) {
+		console.error("⚠️  Startup hydration failed (non-fatal):", err.message);
+	}
+}
+
 function broadcast(msg) {
 	const data = JSON.stringify(msg);
 	wss.clients.forEach((client) => {
@@ -748,6 +786,7 @@ wss.on("connection", (ws, req) => {
 					if (!from || typeof data.roomName !== "string") break;
 
 					const roomId = randomUUID();
+					const roomName = data.roomName.trim() || "Untitled Room";
 					const invitedUsers = Array.isArray(data.invitedUsers)
 						? Array.from(
 								new Set(
@@ -758,7 +797,7 @@ wss.on("connection", (ws, req) => {
 							)
 						: [];
 					rooms.set(roomId, {
-						name: data.roomName.trim() || "Untitled Room",
+						name: roomName,
 						owner: from,
 						members: new Set([from]),
 						pendingRequests: new Set(),
@@ -778,6 +817,29 @@ wss.on("connection", (ws, req) => {
 						room.pendingInvites.add(invitedUser);
 						sendRoomInvite(roomId, room, invitedUser);
 					}
+
+					// Persist room + owner membership to DB (non-blocking)
+					prisma.user.findUnique({ where: { username: from } })
+						.then((ownerUser) => {
+							if (!ownerUser) return;
+							return prisma.room.create({
+								data: {
+									roomId,
+									name: roomName,
+									owner: from,
+									members: {
+										create: {
+											userId: ownerUser.id,
+											role: "owner",
+											status: "approved",
+										},
+									},
+								},
+							});
+						})
+						.catch((err) =>
+							console.error("Failed to persist room to DB:", err.message),
+						);
 
 					ws.send(
 						JSON.stringify({
@@ -825,6 +887,36 @@ wss.on("connection", (ws, req) => {
 					if (room.pendingRequests.has(data.username)) {
 						room.pendingRequests.delete(data.username);
 						room.members.add(data.username);
+
+						// Persist approved membership to DB (non-blocking)
+						Promise.all([
+							prisma.user.findUnique({ where: { username: data.username } }),
+							prisma.room.findUnique({ where: { roomId: data.roomId } }),
+						])
+							.then(([approvedUser, dbRoom]) => {
+								if (!approvedUser || !dbRoom) return;
+								return prisma.roomMember.upsert({
+									where: {
+										userId_roomId: {
+											userId: approvedUser.id,
+											roomId: dbRoom.id,
+										},
+									},
+									create: {
+										userId: approvedUser.id,
+										roomId: dbRoom.id,
+										role: "member",
+										status: "approved",
+									},
+									update: { status: "approved" },
+								});
+							})
+							.catch((err) =>
+								console.error(
+									"Failed to persist room approval to DB:",
+									err.message,
+								),
+							);
 					}
 					broadcastRoomLists();
 					break;
@@ -862,6 +954,36 @@ wss.on("connection", (ws, req) => {
 					room.pendingInvites.delete(from);
 					if (data.accept) {
 						room.members.add(from);
+
+						// Persist accepted membership to DB (non-blocking)
+						Promise.all([
+							prisma.user.findUnique({ where: { username: from } }),
+							prisma.room.findUnique({ where: { roomId: data.roomId } }),
+						])
+							.then(([invitedUser, dbRoom]) => {
+								if (!invitedUser || !dbRoom) return;
+								return prisma.roomMember.upsert({
+									where: {
+										userId_roomId: {
+											userId: invitedUser.id,
+											roomId: dbRoom.id,
+										},
+									},
+									create: {
+										userId: invitedUser.id,
+										roomId: dbRoom.id,
+										role: "member",
+										status: "approved",
+									},
+									update: { status: "approved" },
+								});
+							})
+							.catch((err) =>
+								console.error(
+									"Failed to persist room invite acceptance to DB:",
+									err.message,
+								),
+							);
 					}
 
 					const ownerSocket = getSocketByUsername(room.owner);
@@ -966,6 +1088,31 @@ wss.on("connection", (ws, req) => {
 					});
 
 					for (const member of room.members) {
+						const memberSocket = getSocketByUsername(member);
+						if (
+							memberSocket &&
+							memberSocket.readyState === memberSocket.OPEN
+						) {
+							memberSocket.send(JSON.stringify(payload));
+						}
+					}
+					break;
+				}
+
+				case "room_typing":
+				case "room_stop_typing": {
+					const from = activeConnections.get(ws);
+					const room = rooms.get(data.roomId);
+					if (!from || !room || !room.members.has(from)) break;
+
+					const payload = {
+						type: data.type,
+						roomId: data.roomId,
+						from,
+					};
+
+					for (const member of room.members) {
+						if (member === from) continue;
 						const memberSocket = getSocketByUsername(member);
 						if (
 							memberSocket &&
@@ -1192,6 +1339,10 @@ wss.on("connection", (ws, req) => {
 		if (onlineUsers.get(user_name) === ws) {
 			onlineUsers.delete(user_name);
 		}
+		const sessionId = socketSessions.get(ws);
+		if (sessionId) {
+			revokeSession(sessionId);
+		}
 		socketSessions.delete(ws);
 		socketIps.delete(ws);
 		socketInviteOrigins.delete(ws);
@@ -1372,6 +1523,12 @@ async function handleUserJoined(ws, username) {
 
 	await ensureUserExists(username);
 
+	// Associate this socket's session token with the username
+	const sessionId = socketSessions.get(ws);
+	if (sessionId) {
+		registerSession(sessionId, username);
+	}
+
 	// Register the user (persistent)
 	registeredUsers.add(username);
 
@@ -1441,6 +1598,9 @@ server.listen(PORT, HOST, () => {
 			"Client build missing. Build client with `npm run build -w @peers/client` or run `npm run dev:client`.",
 		);
 	}
+
+	// Hydrate in-memory state from DB after the server is up
+	startupHydration();
 
 	// Log network addresses
 	import("os").then((os) => {

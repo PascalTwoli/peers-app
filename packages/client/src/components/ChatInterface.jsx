@@ -10,6 +10,7 @@ import {
 	Smile,
 	Paperclip,
 	FolderOpen,
+	ExternalLink,
 	Bookmark,
 	Trash2,
 	X,
@@ -21,10 +22,12 @@ import {
 	AlertCircle,
 	RefreshCw,
 	Link2,
+	ChevronDown,
 } from "lucide-react";
 import clsx from "clsx";
 import EmojiPicker from "./EmojiPicker";
 import FilePreviewModal from "./FilePreviewModal";
+import BatchPhotoPreviewModal from "./BatchPhotoPreviewModal";
 import MediaViewerModal from "./MediaViewerModal";
 import SavedFilesModal from "./SavedFilesModal";
 import {
@@ -113,10 +116,16 @@ export default function ChatInterface() {
 	const [mediaLoadFailures, setMediaLoadFailures] = useState({});
 	const [mediaUrlOverrides, setMediaUrlOverrides] = useState({});
 	const [contextMenu, setContextMenu] = useState(null);
+	const [pendingBatchFiles, setPendingBatchFiles] = useState(null);
+	const [showBatchPreview, setShowBatchPreview] = useState(false);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchResultIds, setSearchResultIds] = useState([]);
 	const [replyTarget, setReplyTarget] = useState(null);
 	const messagesEndRef = useRef(null);
+	const scrollContainerRef = useRef(null);
+	const isAtBottomRef = useRef(true);
+	const [showScrollButton, setShowScrollButton] = useState(false);
+	const [imageOrientations, setImageOrientations] = useState({});
 	const inputRef = useRef(null);
 	const fileInputRef = useRef(null);
 	const attachMenuRef = useRef(null);
@@ -125,6 +134,7 @@ export default function ChatInterface() {
 	const isTypingRef = useRef(false);
 	const longPressTimerRef = useRef(null);
 	const contextMenuRef = useRef(null);
+	const mediaAutoRetryCountRef = useRef({});
 	const searchTimeoutRef = useRef(null);
 	const touchStartRef = useRef(null);
 	const touchMovedRef = useRef(false);
@@ -145,9 +155,31 @@ export default function ChatInterface() {
 		: -1;
 	const groupedPhotoMessageIds = new Set();
 
+	const scrollToBottom = useCallback((behavior = "smooth") => {
+		messagesEndRef.current?.scrollIntoView({ behavior });
+	}, []);
+
+	const handleScrollContainer = useCallback(() => {
+		const el = scrollContainerRef.current;
+		if (!el) return;
+		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+		isAtBottomRef.current = atBottom;
+		setShowScrollButton(!atBottom);
+	}, []);
+
 	useEffect(() => {
-		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [userMessages]);
+		const lastMsg = userMessages[userMessages.length - 1];
+		const isMyMessage = lastMsg?.isMe || lastMsg?.from === username;
+		if (isAtBottomRef.current || isMyMessage) {
+			scrollToBottom("smooth");
+		}
+	}, [userMessages, scrollToBottom]);
+
+	useEffect(() => {
+		if (isPeerTyping && isAtBottomRef.current) {
+			scrollToBottom("smooth");
+		}
+	}, [isPeerTyping, scrollToBottom]);
 
 	useEffect(() => {
 		if (searchTimeoutRef.current) {
@@ -348,6 +380,11 @@ export default function ChatInterface() {
 				return false;
 			}
 
+			// HEIC/HEIF can't be rendered as <img> in browsers — keep as file attachments
+			if (isLikelyUnsupportedImage(message)) {
+				return false;
+			}
+
 			// Keep advanced message features in single bubbles so no metadata/action is lost.
 			if (message?.caption || message?.replyTo?.summary) {
 				return false;
@@ -366,7 +403,7 @@ export default function ChatInterface() {
 
 			return true;
 		},
-		[isPhotoMessage],
+		[isPhotoMessage, isLikelyUnsupportedImage],
 	);
 
 	const getPhotoGroupForIndex = useCallback(
@@ -495,8 +532,7 @@ export default function ChatInterface() {
 			}
 
 			const link = document.createElement("a");
-			const cacheBypass = `ts=${Date.now()}`;
-			link.href = `${directUrl}${directUrl.includes("?") ? "&" : "?"}${cacheBypass}`;
+			link.href = directUrl;
 			link.download = message.fileName || "file";
 			link.click();
 		},
@@ -507,6 +543,44 @@ export default function ChatInterface() {
 			showToast,
 			username,
 		],
+	);
+
+	// Retries loading a photo in a group tile in-chat without triggering a download
+	const handleRetryPhoto = useCallback(
+		async (photo) => {
+			clearMediaLoadFailed(photo.messageId);
+			mediaAutoRetryCountRef.current[photo.messageId] = 0;
+			await resolveMessageFileUrl(photo);
+		},
+		[clearMediaLoadFailed, resolveMessageFileUrl],
+	);
+
+	// Auto-retry on onError before showing the manual Retry button
+	const handlePhotoLoadError = useCallback(
+		(message) => {
+			const id = message?.messageId;
+			if (!id) return;
+			const count = mediaAutoRetryCountRef.current[id] || 0;
+			if (count >= 3) {
+				markMediaLoadFailed(id);
+				return;
+			}
+			mediaAutoRetryCountRef.current[id] = count + 1;
+			const delay = [2000, 5000, 10000][count];
+			setTimeout(async () => {
+				const freshUrl = await resolveMessageFileUrl(message);
+				if (freshUrl) {
+					const ts = Date.now();
+					const busted = freshUrl.includes("?")
+						? `${freshUrl}&_r=${ts}`
+						: `${freshUrl}?_r=${ts}`;
+					setMediaUrlOverrides((prev) => ({ ...prev, [id]: busted }));
+				} else {
+					markMediaLoadFailed(id);
+				}
+			}, delay);
+		},
+		[markMediaLoadFailed, resolveMessageFileUrl],
 	);
 
 	const handleOpenMedia = useCallback(
@@ -639,13 +713,13 @@ export default function ChatInterface() {
 	const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 	const sendFilesBatch = useCallback(
-		async (files, fileKind) => {
+		async (files, caption, fileKind) => {
 			for (const file of files) {
 				await handleSendFileUpload({
 					type: "file",
 					file,
 					fileKind,
-					caption: "",
+					caption: caption || "",
 				});
 			}
 		},
@@ -668,36 +742,12 @@ export default function ChatInterface() {
 		}
 
 		if (files.length > 1) {
-			const pendingText = inputValue.trim();
-			if (pendingText) {
-				handleSendMessage({
-					text: pendingText,
-					replyTo: replyTarget
-						? {
-								messageId: replyTarget.messageId,
-								from: replyTarget.from,
-								type: replyTarget.type || "chat",
-								summary: buildReplySummary(replyTarget),
-						  }
-						: null,
-				});
-				setInputValue("");
-				setReplyTarget(null);
-				if (inputRef.current) {
-					inputRef.current.style.height = "auto";
-				}
-			}
-
-			sendFilesBatch(
+			setPendingBatchFiles({
 				files,
-				fileInputMode === "photo" ? "photo" : "file",
-			).catch((error) => {
-				console.error("Failed to send photos:", error);
-				alert("Failed to send one or more files. Please try again.");
+				fileKind: fileInputMode === "photo" ? "photo" : "file",
 			});
-			if (fileInputRef.current) {
-				fileInputRef.current.value = "";
-			}
+			setShowBatchPreview(true);
+			if (fileInputRef.current) fileInputRef.current.value = "";
 			return;
 		}
 
@@ -1015,6 +1065,13 @@ export default function ChatInterface() {
 		setShowDeleteModal(false);
 	};
 
+	const formatFileSize = (bytes) => {
+		if (!bytes) return "";
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / 1048576).toFixed(1)} MB`;
+	};
+
 	return (
 		<div className="flex flex-col h-full w-full bg-bg">
 			{/* Header - Selection Mode */}
@@ -1124,7 +1181,11 @@ export default function ChatInterface() {
 			</div>
 
 			{/* Messages */}
-			<div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 hide-scrollbar">
+			<div className="flex-1 relative">
+				<div
+					ref={scrollContainerRef}
+					onScroll={handleScrollContainer}
+					className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-3 hide-scrollbar">
 				{userMessages.length === 0 ? (
 					<div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-3">
 						<div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#667eea]/20 to-[#764ba2]/20 flex items-center justify-center">
@@ -1166,10 +1227,10 @@ export default function ChatInterface() {
 							);
 							const statusSource =
 								photoGroup[photoGroup.length - 1] || msg;
-							const tileLayoutClass =
-								visiblePhotos.length === 2
-									? "grid-cols-2"
-									: "grid-cols-2";
+							const count = visiblePhotos.length;
+							const landscapeCount = visiblePhotos
+								.filter(p => imageOrientations[p.messageId] === "landscape").length;
+							const isLandscapeGroup = landscapeCount >= Math.ceil(count / 2) && landscapeCount > 0;
 
 							return (
 								<div
@@ -1183,20 +1244,21 @@ export default function ChatInterface() {
 										});
 									}}
 									className={clsx(
-										"group w-full max-w-[22rem] px-1.5 py-1.5 rounded-2xl relative animate-message-in",
+										"group w-full max-w-[min(32rem,70vw)] p-1 rounded-xl relative animate-message-in",
 										isMine
 											? "self-end bg-primary text-white rounded-br-sm"
 											: "self-start bg-surface-light text-white rounded-bl-sm",
 									)}>
 									<div
 										className={clsx(
-											"grid gap-1 rounded-xl overflow-hidden bg-black/20",
-											tileLayoutClass,
+											"rounded-lg overflow-hidden",
+											count === 2 && !isLandscapeGroup && "grid grid-cols-2 gap-1 h-[min(32rem,70vw)]",
+											count === 2 && isLandscapeGroup && "grid grid-rows-2 gap-1 h-[min(32rem,70vw)]",
+											count === 3 && !isLandscapeGroup && "grid grid-cols-[5fr_4fr] grid-rows-2 gap-1 h-[min(32rem,70vw)]",
+											count === 3 && isLandscapeGroup && "grid grid-cols-2 grid-rows-2 gap-1 h-[min(32rem,70vw)]",
+											count >= 4 && "grid grid-cols-2 gap-1 h-[min(32rem,70vw)]",
 										)}>
 										{visiblePhotos.map((photo, photoIndex) => {
-											const isPrimaryTile =
-												visiblePhotos.length === 3 &&
-												photoIndex === 0;
 											const renderableUrl =
 												getRenderableFileUrl(photo);
 											const hasFailed = hasMediaLoadFailed(photo);
@@ -1220,42 +1282,42 @@ export default function ChatInterface() {
 														});
 													}}
 													className={clsx(
-														"relative bg-black/25",
-														visiblePhotos.length === 1 &&
-															"min-h-[14rem]",
-														visiblePhotos.length === 2 &&
-															"min-h-[7.5rem]",
-														visiblePhotos.length >= 4 &&
-															"min-h-[6.5rem]",
-														isPrimaryTile &&
-															"row-span-2 min-h-[14rem]",
+														"relative overflow-hidden bg-black/30 rounded-lg",
+														count === 3 && !isLandscapeGroup && photoIndex === 0 && "row-span-2",
+														count === 3 && isLandscapeGroup && photoIndex === 0 && "col-span-2",
 													)}>
-													{renderableUrl && !hasFailed ? (
+													{renderableUrl && !hasFailed && !isLikelyUnsupportedImage(photo) ? (
 														<img
 															src={renderableUrl}
 															alt={photo.fileName || "photo"}
-															className="w-full h-full object-contain bg-black/25"
-															onError={() =>
-																markMediaLoadFailed(
-																	photo.messageId,
-																)
+															className="absolute inset-0 w-full h-full object-cover"
+															onLoad={(e) => {
+																const { naturalWidth, naturalHeight } = e.target;
+																setImageOrientations(prev => ({
+																	...prev,
+																	[photo.messageId]: naturalWidth >= naturalHeight ? "landscape" : "portrait",
+																}));
+															}}
+															onError={() => handlePhotoLoadError(photo)}
+															onContextMenu={(e) =>
+																e.preventDefault()
 															}
-															onContextMenu={(e) => e.preventDefault()}
 														/>
 													) : (
-														<div className="w-full h-full flex items-center justify-center p-2">
+														<div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/30">
+															<AlertCircle className="w-5 h-5 text-gray-500" />
 															<button
 																onClick={async (e) => {
 																	e.stopPropagation();
-																	await handleRedownloadFile(photo);
+																	await handleRetryPhoto(photo);
 																}}
-																className="text-xs text-white px-3 py-1 rounded-full bg-black/60 hover:bg-black/75 transition-colors">
-																Redownload
+																className="text-xs text-white/70 px-2.5 py-1 rounded-full bg-black/60 hover:bg-black/75 transition-colors">
+																Retry
 															</button>
 														</div>
 													)}
 													{showOverlay && (
-														<div className="absolute inset-0 bg-black/55 flex items-center justify-center text-white font-semibold text-2xl">
+														<div className="absolute inset-0 bg-black/55 flex items-center justify-center text-white font-bold text-xl">
 															+{hiddenCount}
 														</div>
 													)}
@@ -1296,17 +1358,21 @@ export default function ChatInterface() {
 											<Smile className="w-3.5 h-3.5" />
 										</button>
 									</div>
-									{Array.isArray(msg.reactions) && msg.reactions.length > 0 && (
-										<div className="flex flex-wrap gap-1 mt-1 px-1">
-											{getReactionSummary(msg.reactions).map((reactionItem) => (
-												<span
-													key={`${msg.messageId}-${reactionItem.emoji}`}
-													className="px-2 py-0.5 rounded-full bg-black/70 text-xs shadow border border-white/10">
-													{reactionItem.emoji} {reactionItem.count}
-												</span>
-											))}
-										</div>
-									)}
+									{Array.isArray(msg.reactions) &&
+										msg.reactions.length > 0 && (
+											<div className="flex flex-wrap gap-1 mt-1 px-1">
+												{getReactionSummary(msg.reactions).map(
+													(reactionItem) => (
+														<span
+															key={`${msg.messageId}-${reactionItem.emoji}`}
+															className="px-2 py-0.5 rounded-full bg-black/70 text-xs shadow border border-white/10">
+															{reactionItem.emoji}{" "}
+															{reactionItem.count}
+														</span>
+													),
+												)}
+											</div>
+										)}
 									{reactionPickerFor === msg.messageId && (
 										<div className="mt-1 flex gap-1 bg-black/85 rounded-full p-1 w-fit z-20 ml-auto">
 											{EMOJI_OPTIONS.map((emoji) => (
@@ -1314,7 +1380,10 @@ export default function ChatInterface() {
 													key={`${msg.messageId}-${emoji}`}
 													onClick={(e) => {
 														e.stopPropagation();
-														handleReactToMessage(msg.messageId, emoji);
+														handleReactToMessage(
+															msg.messageId,
+															emoji,
+														);
 														setReactionPickerFor(null);
 													}}
 													className="text-sm px-1.5 py-0.5 rounded-full hover:bg-white/10">
@@ -1375,9 +1444,9 @@ export default function ChatInterface() {
 								key={msg.messageId || idx}
 								data-message-id={msg.messageId}
 								className={clsx(
-									"group max-w-[80%] rounded-2xl text-[15px] leading-relaxed relative break-words cursor-pointer transition-all duration-200 animate-message-in",
+									"group max-w-[85%] rounded-xl text-[15px] leading-relaxed relative break-words cursor-pointer transition-all duration-200 animate-message-in",
 									isVisualMediaMessage(msg)
-										? "px-1.5 py-1.5 overflow-visible"
+										? "p-1 overflow-visible"
 										: "px-4 py-2.5",
 									msg.isMe || msg.from === username
 										? "self-end bg-primary text-white rounded-br-sm hover:brightness-110"
@@ -1501,24 +1570,36 @@ export default function ChatInterface() {
 														<img
 															src={getRenderableFileUrl(msg)}
 															alt={msg.fileName}
-															className="w-full max-w-[22rem] max-h-[24rem] rounded-xl cursor-pointer hover:opacity-90 transition-opacity object-contain bg-black/20"
-															onClick={() => handleOpenMedia(msg)}
-															onContextMenu={(e) => e.preventDefault()}
-															onError={() =>
-																markMediaLoadFailed(
-																	msg.messageId,
-																)
+															className="w-full max-w-[min(30rem,70vw)] max-h-[32rem] rounded-lg cursor-pointer hover:opacity-90 transition-opacity object-contain bg-black/20"
+															onClick={() =>
+																handleOpenMedia(msg)
 															}
+															onContextMenu={(e) =>
+																e.preventDefault()
+															}
+															onError={() => handlePhotoLoadError(msg)}
 														/>
 													) : (
-														<div className="w-full max-w-[22rem] h-60 rounded-xl bg-black/25 border border-white/10 flex flex-col items-center justify-center gap-3">
+														<div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-black/25 border border-white/10 max-w-[min(22rem,70vw)]">
+															<div className="flex-shrink-0 w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center">
+																<Image className="w-4 h-4 text-white/40" />
+															</div>
+															<div className="flex-1 min-w-0">
+																<p className="text-sm font-medium truncate text-white/90">{msg.fileName}</p>
+																<p className="text-xs text-white/50">
+																	{msg.fileType?.split("/")[1]?.toUpperCase() || "IMAGE"}
+																	{msg.fileSize ? ` · ${formatFileSize(msg.fileSize)}` : ""}
+																	{" · Can't preview"}
+																</p>
+															</div>
 															<button
 																onClick={(e) => {
 																	e.stopPropagation();
 																	handleRedownloadFile(msg);
 																}}
-																className="px-4 py-2 rounded-full bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors">
-																Redownload
+																className="flex-shrink-0 p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+																title="Download">
+																<Download className="w-4 h-4 text-white/70" />
 															</button>
 														</div>
 													)
@@ -1527,11 +1608,15 @@ export default function ChatInterface() {
 													!hasMediaLoadFailed(msg) ? (
 														<div
 															className="relative cursor-pointer group"
-															onClick={() => handleOpenMedia(msg)}
-															onContextMenu={(e) => e.preventDefault()}>
+															onClick={() =>
+																handleOpenMedia(msg)
+															}
+															onContextMenu={(e) =>
+																e.preventDefault()
+															}>
 															<video
 																src={getRenderableFileUrl(msg)}
-																className="w-full max-w-[22rem] max-h-[24rem] rounded-xl object-contain bg-black/20"
+																className="w-full max-w-[22rem] max-h-[24rem] rounded-lg object-contain bg-black/20"
 																onError={() =>
 																	markMediaLoadFailed(
 																		msg.messageId,
@@ -1548,64 +1633,66 @@ export default function ChatInterface() {
 															</div>
 														</div>
 													) : (
-														<div className="w-full max-w-[22rem] h-60 rounded-xl bg-black/25 border border-white/10 flex flex-col items-center justify-center gap-3">
+														<div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-black/25 border border-white/10 max-w-[min(22rem,70vw)]">
+															<div className="flex-shrink-0 w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center">
+																<Play className="w-4 h-4 text-white/40" fill="currentColor" />
+															</div>
+															<div className="flex-1 min-w-0">
+																<p className="text-sm font-medium truncate text-white/90">{msg.fileName}</p>
+																<p className="text-xs text-white/50">
+																	{msg.fileType?.split("/")[1]?.toUpperCase() || "VIDEO"}
+																	{msg.fileSize ? ` · ${formatFileSize(msg.fileSize)}` : ""}
+																	{" · Can't preview"}
+																</p>
+															</div>
 															<button
 																onClick={(e) => {
 																	e.stopPropagation();
 																	handleRedownloadFile(msg);
 																}}
-																className="px-4 py-2 rounded-full bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors">
-																Redownload
+																className="flex-shrink-0 p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+																title="Download">
+																<Download className="w-4 h-4 text-white/70" />
 															</button>
 														</div>
 													)
-												) : isPdfFile(msg) &&
-												  getRenderableFileUrl(msg) ? (
-													<div className="rounded-xl overflow-hidden border border-white/10 bg-black/30">
-														<iframe
-															title={
-																msg.fileName || "PDF preview"
-															}
-															src={`${getRenderableFileUrl(msg)}#toolbar=0`}
-															className="w-full h-52"
-														/>
-													</div>
 												) : (
-													<div className="flex items-center gap-3 p-3 bg-black/20 rounded-xl">
-														<div className="p-2 rounded-lg bg-white/10">
-															<Paperclip className="w-5 h-5" />
+													<div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-black/25 border border-white/10 max-w-[min(24rem,80vw)]">
+														<div className="flex-shrink-0 w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center">
+															<Paperclip className="w-4 h-4 text-white/60" />
 														</div>
 														<div className="flex-1 min-w-0">
-															<p className="font-medium text-sm truncate">
+															<p className="text-sm font-medium truncate text-white/90">
 																{msg.fileName}
 															</p>
+															<p className="text-xs text-white/50">
+																{msg.fileType?.split("/").pop()?.toUpperCase() || "FILE"}
+																{msg.fileSize ? ` · ${formatFileSize(msg.fileSize)}` : ""}
+															</p>
+														</div>
+														<div className="flex items-center gap-1 flex-shrink-0">
+															{getRenderableFileUrl(msg) && (
+																<button
+																	onClick={async (e) => {
+																		e.stopPropagation();
+																		const url = await resolveMessageFileUrl(msg);
+																		if (url) window.open(url, "_blank");
+																	}}
+																	className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+																	title="Open">
+																	<ExternalLink className="w-4 h-4 text-white/70" />
+																</button>
+															)}
 															<button
 																onClick={async (e) => {
 																	e.stopPropagation();
 																	await handleRedownloadFile(msg);
 																}}
-																className="text-xs text-cyan-300 hover:underline text-left">
-																Download
+																className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+																title="Download">
+																<Download className="w-4 h-4 text-white/70" />
 															</button>
 														</div>
-														<button
-															onClick={async (e) => {
-																e.stopPropagation();
-																const fileHref =
-																	await resolveMessageFileUrl(msg);
-																if (!fileHref) {
-																	return;
-																}
-																const link =
-																	document.createElement("a");
-																link.href = fileHref;
-																link.download = msg.fileName;
-																link.click();
-															}}
-															className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-															title="Download">
-															<Download className="w-4 h-4" />
-														</button>
 													</div>
 												)}
 												{msg.caption && (
@@ -1626,7 +1713,7 @@ export default function ChatInterface() {
 												</p>
 											</div>
 										)}
-										<div>{renderTextWithLinks(msg.text)}</div>
+										<div style={{ whiteSpace: "pre-wrap" }}>{renderTextWithLinks(msg.text)}</div>
 										{detectLinks(msg.text).length > 0 && (
 											<div className="space-y-2">
 												<a
@@ -1744,7 +1831,7 @@ export default function ChatInterface() {
 
 				{/* Typing Indicator */}
 				{isPeerTyping && (
-					<div className="self-start flex items-center gap-2 px-4 py-2.5 bg-surface-light rounded-2xl rounded-bl-sm max-w-[80%]">
+					<div className="self-start flex items-center gap-2 px-4 py-2.5 bg-surface-light rounded-xl rounded-bl-sm max-w-[80%]">
 						<div className="flex gap-1">
 							<span
 								className="w-2 h-2 bg-gray-400 rounded-full animate-typing-dot"
@@ -1765,7 +1852,15 @@ export default function ChatInterface() {
 					</div>
 				)}
 
-				<div ref={messagesEndRef} />
+					<div ref={messagesEndRef} />
+				</div>
+				{showScrollButton && (
+					<button
+						onClick={() => scrollToBottom()}
+						className="absolute bottom-4 right-4 z-10 w-9 h-9 rounded-full bg-[#1f1f1f] hover:bg-[#2a2a2a] border border-white/10 shadow-lg flex items-center justify-center transition-all">
+						<ChevronDown className="w-5 h-5 text-white/70" />
+					</button>
+				)}
 			</div>
 
 			{contextMenu && (
@@ -1776,7 +1871,9 @@ export default function ChatInterface() {
 					{(() => {
 						const targetMessage = getMessageById(contextMenu.messageId);
 						const canEdit =
-							Boolean(targetMessage?.isMe || targetMessage?.from === username) &&
+							Boolean(
+								targetMessage?.isMe || targetMessage?.from === username,
+							) &&
 							targetMessage?.type !== "file" &&
 							targetMessage?.type !== "call-log";
 
@@ -1952,7 +2049,7 @@ export default function ChatInterface() {
 				</button>
 			</div>
 
-			{/* File Preview Modal */}
+			{/* Single-file preview modal */}
 			{showFilePreview && selectedFile && (
 				<FilePreviewModal
 					file={selectedFile}
@@ -1964,6 +2061,23 @@ export default function ChatInterface() {
 						if (fileInputRef.current) {
 							fileInputRef.current.value = "";
 						}
+					}}
+				/>
+			)}
+
+			{/* Multi-photo caption modal */}
+			{showBatchPreview && pendingBatchFiles && (
+				<BatchPhotoPreviewModal
+					files={pendingBatchFiles.files}
+					fileKind={pendingBatchFiles.fileKind}
+					onSend={(files, caption, fileKind) => {
+						sendFilesBatch(files, caption, fileKind).catch((err) => {
+							console.error("Failed to send photos:", err);
+						});
+					}}
+					onClose={() => {
+						setShowBatchPreview(false);
+						setPendingBatchFiles(null);
 					}}
 				/>
 			)}
