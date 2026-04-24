@@ -6,7 +6,7 @@
   "redirects": [
     {
       "source": "/",
-      "destination": "https://peers-hub.vercel.app",
+      "destination": "https://peers-web.vercel.app",
       "permanent": false
     }
   ],

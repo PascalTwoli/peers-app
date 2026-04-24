@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import App from "./App";
 
 const MARKETING_URL =
-	import.meta.env.VITE_MARKETING_URL || "https://peers-hub.vercel.app";
+	import.meta.env.VITE_MARKETING_URL || "https://peers-web.vercel.app";
 
 // Sends the browser to the marketing site and renders nothing while navigating.
 function MarketingRedirect() {
