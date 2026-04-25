@@ -1,14 +1,13 @@
 {
-  "rewrites": [
-    { "source": "/app/(.*)", "destination": "/index.html" },
-    { "source": "/join/(.*)", "destination": "/index.html" }
-  ],
   "redirects": [
     {
       "source": "/",
       "destination": "https://peers-web.vercel.app",
       "permanent": false
     }
+  ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
     {
