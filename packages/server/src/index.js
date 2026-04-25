@@ -1587,6 +1587,8 @@ app.use((req, res, next) => {
 });
 
 server.listen(PORT, HOST, () => {
+	console.log(`Environment : ${NODE_ENV}`);
+	console.log(`Database    : ${process.env.DATABASE_URL ? "✅ connected" : "❌ DATABASE_URL missing"}`);
 	console.log(
 		`${protocol.toUpperCase()} server running at ${protocol}://${HOST}:${PORT}`,
 	);
