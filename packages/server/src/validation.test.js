@@ -42,11 +42,11 @@ test("validateIncomingMessage rejects oversized chat", () => {
 
 test("validateIncomingMessage accepts valid file payload", () => {
 	const result = validateIncomingMessage({
-		type: "file-message",
+		type: "file",
 		to: "bob",
 		fileName: "report.pdf",
 		fileSize: 1024,
-		fileData: "data:application/pdf;base64,AAAA",
+		fileUrl: "https://cdn.example.com/report.pdf",
 	});
 
 	assert.equal(result.valid, true);
@@ -54,11 +54,219 @@ test("validateIncomingMessage accepts valid file payload", () => {
 
 test("validateIncomingMessage rejects oversized file payload", () => {
 	const result = validateIncomingMessage({
-		type: "file-message",
+		type: "file",
 		to: "bob",
 		fileName: "large.bin",
 		fileSize: MAX_FILE_SIZE_BYTES + 1,
-		fileData: "data:application/octet-stream;base64,AAAA",
+		fileUrl: "https://cdn.example.com/large.bin",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts video upgrade request payload", () => {
+	const result = validateIncomingMessage({
+		type: "video_upgrade_request",
+		to: "bob",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid video upgrade response", () => {
+	const result = validateIncomingMessage({
+		type: "video_upgrade_response",
+		to: "bob",
+		accepted: "yes",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts direct typing payload", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+		to: "bob",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage accepts room stop_typing payload", () => {
+	const result = validateIncomingMessage({
+		type: "stop_typing",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects typing without to or roomId", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts typing with boolean isTyping", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+		to: "bob",
+		isTyping: false,
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects typing with non-boolean isTyping", () => {
+	const result = validateIncomingMessage({
+		type: "typing",
+		to: "bob",
+		isTyping: "no",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts valid room message status", () => {
+	const result = validateIncomingMessage({
+		type: "room_message_status",
+		to: "alice",
+		roomId: "room-1",
+		messageId: "room-msg-1",
+		status: "read",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room message status", () => {
+	const result = validateIncomingMessage({
+		type: "room_message_status",
+		to: "alice",
+		roomId: "room-1",
+		messageId: "room-msg-1",
+		status: "opened",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts room_call_start payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_call_start",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects room call payload without roomId", () => {
+	const result = validateIncomingMessage({
+		type: "room_call_join",
+		roomId: "",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts room_call_end payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_call_end",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage accepts room_webrtc_offer payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_webrtc_offer",
+		to: "bob",
+		roomId: "room-1",
+		offer: { type: "offer", sdp: "v=0" },
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects room_webrtc_ice without candidate", () => {
+	const result = validateIncomingMessage({
+		type: "room_webrtc_ice",
+		to: "bob",
+		roomId: "room-1",
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts room_media_state payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_media_state",
+		roomId: "room-1",
+		isMuted: false,
+		isVideoOff: true,
+		isScreenSharing: false,
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room_media_state payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_media_state",
+		roomId: "room-1",
+		isMuted: "no",
+		isVideoOff: true,
+		isScreenSharing: false,
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts valid room_file payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_file",
+		roomId: "room-1",
+		fileName: "notes.txt",
+		fileUrl: "https://cdn.example.com/notes.txt",
+		fileSize: 1024,
+		fileType: "text/plain",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room_file payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_file",
+		roomId: "room-1",
+		fileName: "notes.txt",
+		fileUrl: "https://cdn.example.com/notes.txt",
+		fileSize: MAX_FILE_SIZE_BYTES + 1,
+	});
+
+	assert.equal(result.valid, false);
+});
+
+test("validateIncomingMessage accepts valid room_reaction payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_reaction",
+		roomId: "room-1",
+		messageId: "msg-1",
+		emoji: ":thumbsup:",
+	});
+
+	assert.equal(result.valid, true);
+});
+
+test("validateIncomingMessage rejects invalid room_reaction payload", () => {
+	const result = validateIncomingMessage({
+		type: "room_reaction",
+		roomId: "room-1",
+		messageId: "",
+		emoji: "",
 	});
 
 	assert.equal(result.valid, false);

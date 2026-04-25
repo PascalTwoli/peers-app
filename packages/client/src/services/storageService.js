@@ -1,9 +1,10 @@
 // IndexedDB Service for saving chats and files
 
 const DB_NAME = "WebRTCChatDB";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const MESSAGES_STORE = "messages";
 const FILES_STORE = "files";
+const ROOM_MESSAGES_STORE = "room_messages";
 
 let db = null;
 export async function updateMessageContent(messageId, newText) {
@@ -102,6 +103,15 @@ export async function initDB() {
 				});
 				filesStore.createIndex("timestamp", "timestamp", { unique: false });
 				filesStore.createIndex("type", "type", { unique: false });
+			}
+
+			// Room messages store (v3) - keyed by messageId, indexed by roomId
+			if (!database.objectStoreNames.contains(ROOM_MESSAGES_STORE)) {
+				const roomStore = database.createObjectStore(ROOM_MESSAGES_STORE, {
+					keyPath: "messageId",
+				});
+				roomStore.createIndex("roomId", "roomId", { unique: false });
+				roomStore.createIndex("timestamp", "timestamp", { unique: false });
 			}
 		};
 	});
@@ -326,7 +336,10 @@ export async function saveFile(fileData) {
 			fileName: fileData.fileName,
 			fileType: fileData.fileType,
 			fileSize: fileData.fileSize,
-			fileData: fileData.fileData,
+			fileData: fileData.fileData || null,
+			fileId: fileData.fileId || null,
+			fileUrl: fileData.fileUrl || null,
+			resolvedFileUrl: fileData.resolvedFileUrl || null,
 			from: fileData.from,
 			ownerUsername,
 			peerUsername,
@@ -401,6 +414,105 @@ export async function clearAllFiles() {
 
 		request.onsuccess = () => resolve();
 		request.onerror = () => reject(request.error);
+	});
+}
+
+// --- Room message functions ---
+
+export async function saveRoomMessage(roomId, message) {
+	const database = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = database.transaction([ROOM_MESSAGES_STORE], "readwrite");
+		const store = tx.objectStore(ROOM_MESSAGES_STORE);
+		const record = { ...message, roomId, savedAt: Date.now() };
+		const req = store.put(record);
+		req.onsuccess = () => resolve(req.result);
+		req.onerror = () => reject(req.error);
+	});
+}
+
+export async function getRoomMessages(roomId) {
+	const database = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = database.transaction([ROOM_MESSAGES_STORE], "readonly");
+		const store = tx.objectStore(ROOM_MESSAGES_STORE);
+		const index = store.index("roomId");
+		const req = index.getAll(roomId);
+		req.onsuccess = () =>
+			resolve(req.result.sort((a, b) => a.timestamp - b.timestamp));
+		req.onerror = () => reject(req.error);
+	});
+}
+
+export async function getAllRoomMessagesByRoom() {
+	const database = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = database.transaction([ROOM_MESSAGES_STORE], "readonly");
+		const store = tx.objectStore(ROOM_MESSAGES_STORE);
+		const req = store.getAll();
+		req.onsuccess = () => {
+			const grouped = {};
+			for (const msg of req.result) {
+				if (!grouped[msg.roomId]) grouped[msg.roomId] = [];
+				grouped[msg.roomId].push(msg);
+			}
+			for (const msgs of Object.values(grouped)) {
+				msgs.sort((a, b) => a.timestamp - b.timestamp);
+			}
+			resolve(grouped);
+		};
+		req.onerror = () => reject(req.error);
+	});
+}
+
+export async function updateRoomMessage(messageId, updates) {
+	const database = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = database.transaction([ROOM_MESSAGES_STORE], "readwrite");
+		const store = tx.objectStore(ROOM_MESSAGES_STORE);
+		const getReq = store.get(messageId);
+		getReq.onsuccess = () => {
+			const existing = getReq.result;
+			if (!existing) {
+				resolve(false);
+				return;
+			}
+			const putReq = store.put({ ...existing, ...updates });
+			putReq.onsuccess = () => resolve(true);
+			putReq.onerror = () => reject(putReq.error);
+		};
+		getReq.onerror = () => reject(getReq.error);
+	});
+}
+
+export async function deleteRoomMessage(messageId) {
+	const database = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = database.transaction([ROOM_MESSAGES_STORE], "readwrite");
+		const store = tx.objectStore(ROOM_MESSAGES_STORE);
+		const req = store.delete(messageId);
+		req.onsuccess = () => resolve();
+		req.onerror = () => reject(req.error);
+	});
+}
+
+export async function clearRoomMessages(roomId) {
+	const database = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = database.transaction([ROOM_MESSAGES_STORE], "readwrite");
+		const store = tx.objectStore(ROOM_MESSAGES_STORE);
+		const index = store.index("roomId");
+		const req = index.openCursor(IDBKeyRange.only(roomId));
+		req.onsuccess = (event) => {
+			const cursor = event.target.result;
+			if (cursor) {
+				cursor.delete();
+				cursor.continue();
+			} else {
+				resolve();
+			}
+		};
+		req.onerror = () => reject(req.error);
 	});
 }
 

@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { X, Send, Paperclip } from "lucide-react";
 
-export default function FilePreviewModal({ file, onSend, onClose, initialFileKind = "file" }) {
+export default function FilePreviewModal({
+	file,
+	onSend,
+	onClose,
+	initialFileKind = "file",
+}) {
 	const [caption, setCaption] = useState("");
 	const [previewUrl, setPreviewUrl] = useState("");
 	const [fileKind, setFileKind] = useState("file");
@@ -47,7 +52,7 @@ export default function FilePreviewModal({ file, onSend, onClose, initialFileKin
 
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-			<div className="bg-[#1e1e1e] rounded-2xl max-w-lg w-full mx-4 overflow-hidden shadow-2xl border border-white/10">
+			<div className="bg-[#1e1e1e] rounded-2xl max-w-xl w-full mx-4 overflow-hidden shadow-2xl border border-white/10">
 				{/* Header */}
 				<div className="flex items-center justify-between p-4 border-b border-white/10">
 					<div className="flex items-center gap-2">
@@ -67,29 +72,21 @@ export default function FilePreviewModal({ file, onSend, onClose, initialFileKin
 						<img
 							src={previewUrl}
 							alt={file.name}
-							className="max-h-64 w-full object-contain rounded-lg bg-black"
+							className="max-h-[72vh] w-full object-contain rounded-lg bg-black/25"
 						/>
 					) : isVideo ? (
 						<video
 							src={previewUrl}
 							controls
-							className="max-h-64 w-full rounded-lg bg-black"
+							className="max-h-[72vh] w-full rounded-lg bg-black/25"
 						/>
 					) : (
-						<div className="flex flex-col items-center justify-center py-8 bg-surface-light rounded-lg">
+						<div className="flex flex-col items-center justify-center py-10 bg-surface-light rounded-lg">
 							<Paperclip className="w-12 h-12 text-gray-400 mb-3" />
-							<p className="font-medium text-white">{file.name}</p>
-							<p className="text-sm text-gray-400 mt-1">
-								{formatFileSize(file.size)}
+							<p className="font-medium text-white text-center break-all px-4">
+								{file.name}
 							</p>
-						</div>
-					)}
-
-					{/* File info for media */}
-					{(isImage || isVideo) && (
-						<div className="mt-3 text-center">
-							<p className="text-sm text-gray-400">{file.name}</p>
-							<p className="text-xs text-gray-500">
+							<p className="text-sm text-gray-400 mt-1">
 								{formatFileSize(file.size)}
 							</p>
 						</div>

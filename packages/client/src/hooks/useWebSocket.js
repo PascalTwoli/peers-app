@@ -1,4 +1,26 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { getWebSocketUrl } from "../config/serverConfig";
+
+function getWsCandidateUrls(primaryUrl) {
+	const candidates = [primaryUrl];
+
+	try {
+		const parsed = new URL(primaryUrl);
+		if (parsed.hostname === "localhost") {
+			const fallback = new URL(primaryUrl);
+			fallback.hostname = "127.0.0.1";
+			candidates.push(fallback.toString());
+		} else if (parsed.hostname === "127.0.0.1") {
+			const fallback = new URL(primaryUrl);
+			fallback.hostname = "localhost";
+			candidates.push(fallback.toString());
+		}
+	} catch {
+		return candidates;
+	}
+
+	return Array.from(new Set(candidates));
+}
 
 export function useWebSocket({
 	username,
@@ -17,7 +39,6 @@ export function useWebSocket({
 	onRead,
 	onMessageQueued,
 	onVideoToggle,
-	onFileChunk,
 	onEditMessage,
 	onReaction,
 	onInviteCreated,
@@ -25,14 +46,28 @@ export function useWebSocket({
 	onRoomList,
 	onRoomJoinRequest,
 	onRoomChat,
+	onRoomFile,
+	onRoomTyping,
+	onRoomReaction,
+	onRoomMessageStatus,
 	onRoomCreated,
 	onRoomInvite,
 	onRoomInviteResult,
+	onRoomCallStarted,
+	onRoomCallParticipants,
+	onRoomCallEnded,
+	onRoomMediaState,
+	onRoomWebRTCOffer,
+	onRoomWebRTCAnswer,
+	onRoomWebRTCIce,
+	onVideoUpgradeRequest,
+	onVideoUpgradeResponse,
 	showToast,
 }) {
 	const wsRef = useRef(null);
 	const [isConnected, setIsConnected] = useState(false);
 	const reconnectAttemptsRef = useRef(0);
+	const urlCandidateIndexRef = useRef(0);
 	const reconnectTimeoutRef = useRef(null);
 	const heartbeatIntervalRef = useRef(null);
 	const pongTimeoutRef = useRef(null);
@@ -54,7 +89,6 @@ export function useWebSocket({
 		onRead,
 		onMessageQueued,
 		onVideoToggle,
-		onFileChunk,
 		onEditMessage,
 		onReaction,
 		onInviteCreated,
@@ -62,9 +96,22 @@ export function useWebSocket({
 		onRoomList,
 		onRoomJoinRequest,
 		onRoomChat,
+		onRoomFile,
+		onRoomTyping,
+		onRoomReaction,
+		onRoomMessageStatus,
 		onRoomCreated,
 		onRoomInvite,
 		onRoomInviteResult,
+		onRoomCallStarted,
+		onRoomCallParticipants,
+		onRoomCallEnded,
+		onRoomMediaState,
+		onRoomWebRTCOffer,
+		onRoomWebRTCAnswer,
+		onRoomWebRTCIce,
+		onVideoUpgradeRequest,
+		onVideoUpgradeResponse,
 		showToast,
 	});
 
@@ -85,7 +132,6 @@ export function useWebSocket({
 			onRead,
 			onMessageQueued,
 			onVideoToggle,
-			onFileChunk,
 			onEditMessage,
 			onReaction,
 			onInviteCreated,
@@ -93,9 +139,22 @@ export function useWebSocket({
 			onRoomList,
 			onRoomJoinRequest,
 			onRoomChat,
+			onRoomFile,
+			onRoomTyping,
+			onRoomReaction,
+			onRoomMessageStatus,
 			onRoomCreated,
 			onRoomInvite,
 			onRoomInviteResult,
+			onRoomCallStarted,
+			onRoomCallParticipants,
+			onRoomCallEnded,
+			onRoomMediaState,
+			onRoomWebRTCOffer,
+			onRoomWebRTCAnswer,
+			onRoomWebRTCIce,
+			onVideoUpgradeRequest,
+			onVideoUpgradeResponse,
 			showToast,
 		};
 	});
@@ -141,15 +200,8 @@ export function useWebSocket({
 			return;
 		}
 
-		// Connect to WebSocket server
-		// In dev mode, use same hostname as page but with server port (4430)
-		// In production, use same host as page
-		const hostname = window.location.hostname;
-		const wsHost = import.meta.env.DEV
-			? `${hostname}:4430`
-			: window.location.host;
-		const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-		const wsUrl = `${wsProtocol}://${wsHost}`;
+		// Connect to environment-aware WebSocket endpoint.
+		const wsCandidates = getWsCandidateUrls(getWebSocketUrl());
 
 		const connect = () => {
 			if (!isMountedRef.current) return;
@@ -160,6 +212,10 @@ export function useWebSocket({
 				reconnectTimeoutRef.current = null;
 			}
 
+			const wsUrl =
+				wsCandidates[
+					Math.min(urlCandidateIndexRef.current, wsCandidates.length - 1)
+				];
 			console.log("Connecting to WebSocket:", wsUrl);
 			const ws = new WebSocket(wsUrl);
 			wsRef.current = ws;
@@ -171,6 +227,7 @@ export function useWebSocket({
 				}
 				setIsConnected(true);
 				reconnectAttemptsRef.current = 0;
+				urlCandidateIndexRef.current = 0;
 				callbacksRef.current.showToast?.("Connected to server", "success");
 				startHeartbeat();
 
@@ -193,6 +250,12 @@ export function useWebSocket({
 
 						case "welcome":
 							console.log("WebSocket welcome received");
+							if (data.sessionId) {
+								localStorage.setItem(
+									"peers_session_token",
+									data.sessionId,
+								);
+							}
 							break;
 
 						case "onlineUsers":
@@ -242,6 +305,7 @@ export function useWebSocket({
 						case "chat":
 							cb.onMessage?.({
 								text: data.text,
+								replyTo: data.replyTo || null,
 								from: data.from,
 								messageId: data.messageId,
 								timestamp: data.timestamp,
@@ -250,7 +314,11 @@ export function useWebSocket({
 							break;
 
 						case "typing":
-							cb.onTyping?.(data);
+							cb.onTyping?.({ ...data, isTyping: true });
+							break;
+
+						case "stop_typing":
+							cb.onTyping?.({ ...data, isTyping: false });
 							break;
 
 						case "reject":
@@ -262,24 +330,21 @@ export function useWebSocket({
 							cb.onVideoToggle?.(data);
 							break;
 
-						case "file-message":
+						case "file":
 							cb.onMessage?.({
 								type: "file",
 								fileName: data.fileName,
 								fileType: data.fileType,
 								fileKind: data.fileKind || "file",
 								fileSize: data.fileSize,
-								fileData: data.fileData,
+								fileId: data.fileId || null,
+								fileUrl: data.fileUrl,
 								caption: data.caption || "",
 								from: data.from,
 								messageId: data.messageId,
 								timestamp: data.timestamp,
 								isMe: false,
 							});
-							break;
-
-						case "file_chunk":
-							cb.onFileChunk?.(data);
 							break;
 
 						case "edit_message":
@@ -310,6 +375,26 @@ export function useWebSocket({
 							cb.onRoomChat?.(data);
 							break;
 
+						case "room_file":
+							cb.onRoomFile?.(data);
+							break;
+
+						case "room_typing":
+						case "room_stop_typing":
+							cb.onRoomTyping?.({
+								...data,
+								isTyping: data.type === "room_typing",
+							});
+							break;
+
+						case "room_reaction":
+							cb.onRoomReaction?.(data);
+							break;
+
+						case "room_message_status":
+							cb.onRoomMessageStatus?.(data);
+							break;
+
 						case "room_created":
 							cb.onRoomCreated?.(data);
 							break;
@@ -320,6 +405,42 @@ export function useWebSocket({
 
 						case "room_invite_result":
 							cb.onRoomInviteResult?.(data);
+							break;
+
+						case "room_call_started":
+							cb.onRoomCallStarted?.(data);
+							break;
+
+						case "room_call_participants":
+							cb.onRoomCallParticipants?.(data);
+							break;
+
+						case "room_call_ended":
+							cb.onRoomCallEnded?.(data);
+							break;
+
+						case "room_media_state":
+							cb.onRoomMediaState?.(data);
+							break;
+
+						case "room_webrtc_offer":
+							cb.onRoomWebRTCOffer?.(data);
+							break;
+
+						case "room_webrtc_answer":
+							cb.onRoomWebRTCAnswer?.(data);
+							break;
+
+						case "room_webrtc_ice":
+							cb.onRoomWebRTCIce?.(data);
+							break;
+
+						case "video_upgrade_request":
+							cb.onVideoUpgradeRequest?.(data);
+							break;
+
+						case "video_upgrade_response":
+							cb.onVideoUpgradeResponse?.(data);
 							break;
 
 						case "delivered":
@@ -344,6 +465,25 @@ export function useWebSocket({
 			ws.onclose = () => {
 				setIsConnected(false);
 				stopHeartbeat();
+
+				if (
+					isMountedRef.current &&
+					urlCandidateIndexRef.current < wsCandidates.length - 1
+				) {
+					urlCandidateIndexRef.current += 1;
+					console.log(
+						"Primary WebSocket URL failed, trying fallback:",
+						wsCandidates[urlCandidateIndexRef.current],
+					);
+					reconnectTimeoutRef.current = setTimeout(() => {
+						if (isMountedRef.current) {
+							connect();
+						}
+					}, 250);
+					return;
+				}
+
+				urlCandidateIndexRef.current = 0;
 
 				// Only reconnect if still mounted and under retry limit
 				if (isMountedRef.current && reconnectAttemptsRef.current < 5) {

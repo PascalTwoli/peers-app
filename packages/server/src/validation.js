@@ -113,6 +113,28 @@ export function validateIncomingMessage(data) {
 		return { valid: true };
 	}
 
+	if (data.type === "typing" || data.type === "stop_typing") {
+		if (data.isTyping !== undefined && typeof data.isTyping !== "boolean") {
+			return {
+				valid: false,
+				message: "isTyping must be boolean when provided",
+			};
+		}
+
+		if (isNonEmptyString(data.roomId)) {
+			return { valid: true };
+		}
+
+		if (!isNonEmptyString(data.to)) {
+			return {
+				valid: false,
+				message: "typing and stop_typing require to or roomId",
+			};
+		}
+
+		return { valid: true };
+	}
+
 	if (data.type === "create_invite" || data.type === "list_rooms") {
 		return { valid: true };
 	}
@@ -201,30 +223,17 @@ export function validateIncomingMessage(data) {
 		return { valid: true };
 	}
 
-	if (!isNonEmptyString(data.to)) {
-		return { valid: false, message: "Missing or invalid target user" };
-	}
-
-	if (data.type === "chat") {
-		if (!isNonEmptyString(data.text)) {
-			return { valid: false, message: "Message text is required" };
+	if (data.type === "room_file") {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
 		}
 
-		if (data.text.length > MAX_TEXT_LENGTH) {
-			return {
-				valid: false,
-				message: `Message exceeds max length (${MAX_TEXT_LENGTH})`,
-			};
-		}
-	}
-
-	if (data.type === "file-message") {
 		if (!isNonEmptyString(data.fileName)) {
 			return { valid: false, message: "File name is required" };
 		}
 
-		if (!isNonEmptyString(data.fileData)) {
-			return { valid: false, message: "File payload is required" };
+		if (!isNonEmptyString(data.fileUrl)) {
+			return { valid: false, message: "fileUrl is required" };
 		}
 
 		if (
@@ -246,36 +255,142 @@ export function validateIncomingMessage(data) {
 			};
 		}
 
-		// Guard against malformed payloads that declare a small size but carry huge base64 data.
-		const maxEncodedLength = Math.ceil((MAX_FILE_SIZE_BYTES * 4) / 3) + 1024;
-		if (data.fileData.length > maxEncodedLength) {
-			return { valid: false, message: "File payload exceeds allowed limit" };
+		return { valid: true };
+	}
+
+	if (data.type === "room_reaction") {
+		if (!isNonEmptyString(data.roomId) || !isNonEmptyString(data.messageId)) {
+			return {
+				valid: false,
+				message: "roomId and messageId are required",
+			};
+		}
+
+		if (!isNonEmptyString(data.emoji) || data.emoji.length > 10) {
+			return { valid: false, message: "Invalid emoji" };
+		}
+
+		return { valid: true };
+	}
+
+	if (data.type === "room_message_status") {
+		if (!isNonEmptyString(data.roomId) || !isNonEmptyString(data.messageId)) {
+			return {
+				valid: false,
+				message: "roomId and messageId are required",
+			};
+		}
+
+		if (data.status !== "delivered" && data.status !== "read") {
+			return {
+				valid: false,
+				message: "status must be delivered or read",
+			};
 		}
 	}
 
-	if (data.type === "file_chunk") {
-		if (!isNonEmptyString(data.messageId)) {
-			return { valid: false, message: "Chunk messageId is required" };
+	if (
+		data.type === "room_call_start" ||
+		data.type === "room_call_join" ||
+		data.type === "room_call_leave" ||
+		data.type === "room_call_end"
+	) {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
+		}
+		return { valid: true };
+	}
+
+	if (
+		data.type === "room_webrtc_offer" ||
+		data.type === "room_webrtc_answer" ||
+		data.type === "room_webrtc_ice"
+	) {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
 		}
 
-		if (!isNonEmptyString(data.fileName)) {
-			return { valid: false, message: "Chunk fileName is required" };
+		if (!isNonEmptyString(data.to)) {
+			return { valid: false, message: "Missing or invalid target user" };
 		}
 
-		if (!Number.isInteger(data.totalChunks) || data.totalChunks <= 0) {
-			return { valid: false, message: "Invalid totalChunks" };
+		if (data.type === "room_webrtc_offer" && !data.offer) {
+			return { valid: false, message: "offer is required" };
+		}
+
+		if (data.type === "room_webrtc_answer" && !data.answer) {
+			return { valid: false, message: "answer is required" };
+		}
+
+		if (data.type === "room_webrtc_ice" && !data.ice) {
+			return { valid: false, message: "ice is required" };
+		}
+
+		return { valid: true };
+	}
+
+	if (data.type === "room_media_state") {
+		if (!isNonEmptyString(data.roomId)) {
+			return { valid: false, message: "roomId is required" };
 		}
 
 		if (
-			!Number.isInteger(data.chunkIndex) ||
-			data.chunkIndex < 0 ||
-			data.chunkIndex >= data.totalChunks
+			typeof data.isMuted !== "boolean" ||
+			typeof data.isVideoOff !== "boolean" ||
+			typeof data.isScreenSharing !== "boolean"
 		) {
-			return { valid: false, message: "Invalid chunkIndex" };
+			return {
+				valid: false,
+				message: "isMuted, isVideoOff and isScreenSharing must be booleans",
+			};
 		}
 
-		if (!isNonEmptyString(data.chunkData)) {
-			return { valid: false, message: "Chunk data is required" };
+		return { valid: true };
+	}
+
+	if (!isNonEmptyString(data.to)) {
+		return { valid: false, message: "Missing or invalid target user" };
+	}
+
+	if (data.type === "chat") {
+		if (!isNonEmptyString(data.text)) {
+			return { valid: false, message: "Message text is required" };
+		}
+
+		if (data.text.length > MAX_TEXT_LENGTH) {
+			return {
+				valid: false,
+				message: `Message exceeds max length (${MAX_TEXT_LENGTH})`,
+			};
+		}
+	}
+
+	if (data.type === "file") {
+		if (!isNonEmptyString(data.fileName)) {
+			return { valid: false, message: "File name is required" };
+		}
+
+		if (!isNonEmptyString(data.fileUrl)) {
+			return { valid: false, message: "fileUrl is required" };
+		}
+
+		if (
+			data.fileKind !== undefined &&
+			data.fileKind !== "photo" &&
+			data.fileKind !== "file"
+		) {
+			return { valid: false, message: "Invalid file kind" };
+		}
+
+		if (typeof data.fileSize !== "number" || Number.isNaN(data.fileSize)) {
+			return { valid: false, message: "Invalid file size" };
+		}
+
+		if (data.fileSize <= 0 || data.fileSize > MAX_FILE_SIZE_BYTES) {
+			return {
+				valid: false,
+				message: `File size must be between 1 byte and ${MAX_FILE_SIZE_BYTES} bytes`,
+			};
 		}
 	}
 
@@ -303,6 +418,12 @@ export function validateIncomingMessage(data) {
 
 		if (!isNonEmptyString(data.emoji) || data.emoji.length > 8) {
 			return { valid: false, message: "Invalid emoji" };
+		}
+	}
+
+	if (data.type === "video_upgrade_response") {
+		if (typeof data.accepted !== "boolean") {
+			return { valid: false, message: "accepted must be boolean" };
 		}
 	}
 

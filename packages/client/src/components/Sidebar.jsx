@@ -33,7 +33,7 @@ export default function Sidebar() {
 		sidebarOpen,
 		setSidebarOpen,
 		handleLogout,
-		handleCreateInviteLink,
+		handleOpenInviteCenter,
 		handleOpenRoomComposer,
 		handleOpenRoom,
 		handleRequestJoinRoom,
@@ -61,13 +61,14 @@ export default function Sidebar() {
 		return `linear-gradient(135deg, hsl(${hue}, 70%, 48%), hsl(${(hue + 30) % 360}, 70%, 43%))`;
 	};
 
-	// Get users to display based on filter
-	const displayUsers =
+	// Get users to display based on filter, online users sorted to top
+	const displayUsers = (
 		userFilter === "online"
 			? onlineUsers.map((u) => ({ username: u, isOnline: true }))
 			: allUsers.length > 0
 				? allUsers
-				: onlineUsers.map((u) => ({ username: u, isOnline: true }));
+				: onlineUsers.map((u) => ({ username: u, isOnline: true }))
+	).slice().sort((a, b) => Number(b.isOnline) - Number(a.isOnline));
 
 	const onlineCount =
 		allUsers.filter((u) => u.isOnline).length || onlineUsers.length;
@@ -136,8 +137,8 @@ export default function Sidebar() {
 
 			<aside
 				className={clsx(
-					"fixed inset-y-0 left-0 z-50 md:relative md:inset-auto",
-					"bottom-16 md:bottom-auto",
+					"fixed top-0 left-0 z-50 md:relative md:inset-auto",
+					"h-[calc(100dvh-4rem)] md:h-full",
 					"w-full max-w-[420px] md:w-[380px] md:max-w-none",
 					"transition-transform duration-300",
 					sidebarOpen
@@ -492,9 +493,9 @@ export default function Sidebar() {
 										</div>
 									)}
 									<button
-										onClick={handleCreateInviteLink}
+										onClick={handleOpenInviteCenter}
 										className="w-full h-11 rounded-xl bg-cyan-600/25 hover:bg-cyan-600/35 text-cyan-100 font-medium text-sm transition-colors">
-										Generate Invite Link
+										Open Invite Center
 									</button>
 									<div className="rounded-xl border border-white/10 bg-white/5 p-3">
 										<p className="text-xs uppercase tracking-[0.15em] text-gray-400 mb-2">
@@ -518,7 +519,7 @@ export default function Sidebar() {
 											</>
 										) : (
 											<p className="text-sm text-gray-500">
-												No link generated yet.
+												No link generated yet. Open Invite Center to create one.
 											</p>
 										)}
 									</div>

@@ -25,6 +25,17 @@ npm run build -w @peers/client
 
 Output directory: `packages/client/dist`.
 
+## Environment-Aware Backend Configuration
+
+Server URL switching is centralized in [src/config/serverConfig.js](src/config/serverConfig.js):
+
+- Development API: `https://localhost:8080`
+- Development WebSocket: `wss://localhost:8080`
+- Production API: `https://peers-server-prod-production.up.railway.app`
+- Production WebSocket: `wss://peers-server-prod-production.up.railway.app`
+
+The client automatically switches based on `import.meta.env.DEV`, so local development and Vercel production work without manual code edits.
+
 ## Core UI Areas
 
 - `src/App.jsx`: app state orchestration and context provider

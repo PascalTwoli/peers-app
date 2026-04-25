@@ -26,6 +26,7 @@ export default function VideoInterface() {
 		callStartTime,
 		isMuted,
 		isVideoOff,
+		isVideoUpgradePending,
 		remoteVideoOff,
 		setCurrentView,
 		handleHangup,
@@ -140,6 +141,9 @@ export default function VideoInterface() {
 	};
 
 	const isAudioOnly = callType === "audio";
+	const hasLocalVideoTrack = (localStream?.getVideoTracks().length || 0) > 0;
+	const isUpgradeRequestPending =
+		isAudioOnly && !hasLocalVideoTrack && isVideoUpgradePending;
 
 	// Swap main and PiP views
 	const swapViews = useCallback(() => {
@@ -339,11 +343,19 @@ export default function VideoInterface() {
 					}}
 					className={clsx(
 						"w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95",
-						isVideoOff
-							? "bg-white text-black shadow-lg"
-							: "bg-white/10 text-white hover:bg-white/20",
+						isUpgradeRequestPending
+							? "bg-cyan-500 text-black hover:bg-cyan-400"
+							: isVideoOff
+								? "bg-white text-black shadow-lg"
+								: "bg-white/10 text-white hover:bg-white/20",
 					)}
-					title={isVideoOff ? "Turn on camera" : "Turn off camera"}>
+					title={
+						isUpgradeRequestPending
+							? "Waiting for peer to allow video"
+							: isVideoOff
+								? "Turn on camera"
+								: "Turn off camera"
+					}>
 					{isVideoOff ? (
 						<VideoOff className="w-5 h-5 md:w-6 md:h-6" />
 					) : (

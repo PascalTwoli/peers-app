@@ -1,0 +1,17 @@
+services:
+   server:
+      build:
+         context: ./packages/server
+         dockerfile: Dockerfile
+      image: peers-server:latest
+      container_name: peers-server
+      env_file:
+         - ./packages/server/.env
+      environment:
+         - NODE_ENV=production
+         - PORT=3000
+      ports:
+         - "3000:3000"
+      volumes:
+         - ./packages/client/dist:/client/dist:ro
+      restart: unless-stopped

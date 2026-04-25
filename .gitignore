@@ -4,6 +4,8 @@ node_modules/
 # Build outputs
 dist/
 build/
+.next/
+**/.next/
 
 # Environment files
 .env
@@ -31,3 +33,4 @@ server.cert
 
 # Vite
 *.local
+.vercel

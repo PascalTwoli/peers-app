@@ -32,13 +32,14 @@ export function createTextMessage(to, text) {
 
 export function createFileMessage(to, file) {
 	return {
-		type: "file-message",
+		type: "file",
 		to,
 		fileName: file.fileName,
 		fileType: file.fileType,
 		fileKind: file.fileKind || "file",
 		fileSize: file.fileSize,
-		fileData: file.fileData,
+		fileUrl: file.fileUrl || null,
+		fileData: file.fileData || null,
 		caption: file.caption || "",
 		messageId: file.messageId || createMessageId("file"),
 		timestamp: file.timestamp || Date.now(),

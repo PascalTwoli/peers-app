@@ -1,0 +1,106 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  username  String   @unique
+  createdAt DateTime @default(now())
+  lastSeen  DateTime @default(now())
+  members   RoomMember[]
+}
+
+model Message {
+  id        String     @id @default(uuid()) @db.Uuid
+  messageId String     @unique
+  from      String
+  to        String?
+  roomId    String?
+  text      String?
+  fileUrl   String?
+  fileName  String?
+  edited    Boolean    @default(false)
+  timestamp DateTime   @default(now())
+  reactions Reaction[]
+
+  @@index([from])
+  @@index([to])
+  @@index([roomId])
+  @@index([timestamp])
+}
+
+model File {
+  id         String   @id @default(uuid()) @db.Uuid
+  uploader   String
+  fileName   String
+  fileType   String
+  fileSize   Int
+  storageKey String   @unique
+  fileUrl    String
+  createdAt  DateTime @default(now())
+
+  @@index([uploader])
+  @@index([createdAt])
+}
+
+model Reaction {
+  id        String   @id @default(uuid()) @db.Uuid
+  emoji     String
+  username  String
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [messageId], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([messageId])
+  @@unique([messageId, username, emoji])
+}
+
+model Room {
+  id        String       @id @default(uuid()) @db.Uuid
+  roomId    String       @unique
+  name      String
+  owner     String
+  createdAt DateTime     @default(now())
+  members   RoomMember[]
+  invites   Invite[]
+
+  @@index([owner])
+}
+
+model RoomMember {
+  id        String   @id @default(cuid())
+  userId    String   @db.Uuid
+  roomId    String   @db.Uuid
+  role      String   @default("member")
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roomId])
+  @@index([roomId])
+}
+
+model Invite {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  createdBy String
+  roomId    String   @db.Uuid
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([expiresAt])
+}

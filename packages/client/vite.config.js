@@ -1,22 +1,34 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import basicSsl from '@vitejs/plugin-basic-ssl'
+import { defineConfig, loadEnv } from "vite";
+import react from "@vitejs/plugin-react";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 
-export default defineConfig({
-  plugins: [react(), basicSsl()],
-  server: {
-    port: 5173,
-    host: true, // Expose to network
-    https: true, // Enable HTTPS for camera/mic access on network
-    proxy: {
-      '/api': {
-        target: 'http://localhost:4430',
-        changeOrigin: true,
-      },
-    },
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: true,
-  },
-})
+export default defineConfig(({ mode }) => {
+	const env = loadEnv(mode, process.cwd(), "");
+	const apiProxyTarget = env.VITE_API_PROXY_TARGET || "https://127.0.0.1:8080";
+
+	return {
+		plugins: [react(), basicSsl()],
+		server: {
+			port: 5173,
+			host: true, // Expose to network
+			https: true, // Enable HTTPS for camera/mic access on network
+			proxy: {
+				"/api": {
+					target: apiProxyTarget,
+					changeOrigin: true,
+					secure: false,
+				},
+				"/ws": {
+					target: apiProxyTarget,
+					changeOrigin: true,
+					secure: false,
+					ws: true,
+				},
+			},
+		},
+		build: {
+			outDir: "dist",
+			sourcemap: true,
+		},
+	};
+});
