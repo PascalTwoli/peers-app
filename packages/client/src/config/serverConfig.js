@@ -1,6 +1,6 @@
 const PROD_HTTP_BASE_URL =
-	"https://peers-server-prod-production.up.railway.app";
-const PROD_WS_BASE_URL = "wss://peers-server-prod-production.up.railway.app";
+	"https://peers-server-production.up.railway.app";
+const PROD_WS_BASE_URL = "wss://peers-server-production.up.railway.app";
 
 function getDevHost() {
 	if (typeof window === "undefined") {
