@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: peers-server
+    runtime: docker
+    dockerfilePath: ./packages/server/Dockerfile
+    dockerContext: ./packages/server
+    region: oregon # or frankfurt, singapore, ohio
+    plan: free # Free tier
+    branch: main
+    
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        sync: false # Will be set manually in Render dashboard
+      - key: CORS_ORIGINS
+        sync: false # Will be set manually
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_BUCKET_NAME
+        sync: false
+      - key: MAX_CONNECTIONS_PER_IP
+        value: 20
+      - key: OFFLINE_MESSAGE_TTL_MS
+        value: 604800000
+
+    healthCheckPath: /api/health

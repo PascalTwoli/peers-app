@@ -1,0 +1,20 @@
+version: 2.1
+
+orbs:
+  docker: circleci/docker@2.6.0
+
+workflows:
+  build-and-push:
+    jobs:
+      - docker/publish:
+          image: ghcr.io/$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME/peers-server
+          registry: ghcr.io
+          tag: latest,$CIRCLE_SHA1
+          docker-username: GITHUB_USERNAME
+          docker-password: GITHUB_TOKEN
+          path: packages/server
+          dockerfile: packages/server/Dockerfile
+          filters:
+            branches:
+              only:
+                - main

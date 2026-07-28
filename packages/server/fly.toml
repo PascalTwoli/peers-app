@@ -1,0 +1,31 @@
+app = "peers-server"
+primary_region = "iad" # US East
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0 # Scale to zero when not used
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  MAX_CONNECTIONS_PER_IP = "20"
+  OFFLINE_MESSAGE_TTL_MS = "604800000"
+
+# Secrets (set via: fly secrets set KEY=value)
+# DATABASE_URL
+# CORS_ORIGINS
+# AWS_ACCESS_KEY_ID
+# AWS_SECRET_ACCESS_KEY
+# AWS_BUCKET_NAME
