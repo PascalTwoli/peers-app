@@ -8,7 +8,12 @@ const MARKETING_URL =
 // Sends the browser to the marketing site and renders nothing while navigating.
 function MarketingRedirect() {
 	useEffect(() => {
-		window.location.replace(MARKETING_URL);
+		// In development mode, redirect to /app instead of marketing site
+		if (import.meta.env.DEV) {
+			window.location.replace("/app");
+		} else {
+			window.location.replace(MARKETING_URL);
+		}
 	}, []);
 	return null;
 }

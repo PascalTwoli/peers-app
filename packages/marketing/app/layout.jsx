@@ -2,6 +2,7 @@ import { Sora, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import { Analytics } from "@vercel/analytics/next";
 
 const headingFont = Sora({
 	subsets: ["latin"],
@@ -28,6 +29,7 @@ export default function RootLayout({ children }) {
 					<main>{children}</main>
 					<Footer />
 				</div>
+				<Analytics />
 			</body>
 		</html>
 	);

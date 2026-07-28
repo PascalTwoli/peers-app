@@ -34,3 +34,6 @@ server.cert
 # Vite
 *.local
 .vercel
+
+.vercel
+.env*
